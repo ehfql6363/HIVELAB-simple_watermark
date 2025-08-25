@@ -37,8 +37,8 @@ class OptionsPanel(ttk.Frame):
 
         size_frame = ttk.Frame(top); size_frame.grid(row=0, column=3, padx=8, sticky="w")
         ttk.Label(size_frame, text="타겟 크기:").grid(row=0, column=0, sticky="w")
-        preset = [f"{w}x{h}" for (w, h) in DEFAULT_SIZES]
-        self.var_size = tk.StringVar(value=preset[0])
+        preset = ["원본 그대로"] + [f"{w}x{h}" for (w, h) in DEFAULT_SIZES]
+        self.var_size = tk.StringVar(value=preset[1])  # 기본값은 첫 프리셋(원한다면 preset[0]로 바꿔도 OK)
         self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset, width=12, state="readonly")
         self.cb_size.grid(row=1, column=0, sticky="w")
         self.cb_size.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
@@ -141,10 +141,14 @@ class OptionsPanel(ttk.Frame):
 
     def collect_options(self):
         size_str = self.var_size.get().lower().replace(" ", "")
-        try:
-            w, h = map(int, size_str.split("x")); sizes = [(w, h)]
-        except Exception:
-            sizes = [DEFAULT_SIZES[0]]
+        if "원본" in size_str:  # ✅ '원본 그대로' 선택 시
+            sizes = [(0, 0)]  # (0,0) = 원본 유지(센티널)
+        else:
+            try:
+                w, h = map(int, size_str.split("x"))
+                sizes = [(w, h)]
+            except Exception:
+                sizes = [DEFAULT_SIZES[0]]
 
         font_path = self.var_font.get().strip()
         return (
@@ -163,9 +167,13 @@ class OptionsPanel(ttk.Frame):
     def set_initial_options(self, settings):
         try: self.var_output.set(str(settings.output_root or ""))
         except: pass
+        # set_initial_options(self, settings) 내 크기 반영 부분 교체
         try:
             s0 = settings.sizes[0] if settings.sizes else None
-            if s0: self.var_size.set(f"{int(s0[0])}x{int(s0[1])}")
+            if s0 == (0, 0):
+                self.var_size.set("원본 그대로")
+            elif s0:
+                self.var_size.set(f"{int(s0[0])}x{int(s0[1])}")
         except: pass
         try: self.var_bg.set("#%02X%02X%02X" % settings.bg_color)
         except: pass
