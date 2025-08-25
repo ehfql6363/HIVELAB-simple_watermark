@@ -4,7 +4,12 @@ from typing import List, Tuple
 
 DEFAULT_SIZES = [(1080, 1080), (1080, 1350), (1080, 1920)]
 DEFAULT_BG = (255, 255, 255)
-DEFAULT_WM_TEXT = "㈜ 하이브랩"
+DEFAULT_WM_TEXT = "© YourBrand"
+
+# 새 기본값
+DEFAULT_WM_FILL = (0, 0, 0)         # 검정
+DEFAULT_WM_STROKE = (255, 255, 255) # 흰색
+DEFAULT_WM_STROKE_W = 2
 
 @dataclass
 class RootConfig:
@@ -17,8 +22,13 @@ class AppSettings:
     sizes: List[Tuple[int, int]] = None
     bg_color: Tuple[int, int, int] = DEFAULT_BG
     wm_opacity: int = 30
-    wm_scale_pct: int = 15
-    default_wm_text: str = DEFAULT_WM_TEXT  # 루트에 비어있으면 이 값으로 대체
+    wm_scale_pct: int = 5
+    default_wm_text: str = DEFAULT_WM_TEXT
+
+    # 새 필드
+    wm_fill_color: Tuple[int, int, int] = DEFAULT_WM_FILL
+    wm_stroke_color: Tuple[int, int, int] = DEFAULT_WM_STROKE
+    wm_stroke_width: int = DEFAULT_WM_STROKE_W
 
     def __post_init__(self):
         if self.sizes is None:
