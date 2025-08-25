@@ -34,6 +34,10 @@ class AppController:
 
         canvas = resize_contain(before, settings.sizes[0], settings.bg_color)
         wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
+
+        # 🔹 게시물별 앵커 우선 적용
+        anchor = meta.get("anchor") or settings.post_anchors.get(key) or settings.wm_anchor
+
         after = add_text_watermark(
             canvas,
             text=wm_text,
@@ -42,8 +46,8 @@ class AppController:
             fill_rgb=settings.wm_fill_color,
             stroke_rgb=settings.wm_stroke_color,
             stroke_width=settings.wm_stroke_width,
-            anchor_norm=settings.wm_anchor,
-            font_path=settings.wm_font_path,  # 🔹 폰트 전달
+            anchor_norm=anchor,
+            font_path=settings.wm_font_path,
         )
         return before, after
 
@@ -63,12 +67,13 @@ class AppController:
             try:
                 for key, meta in posts.items():
                     post = meta["post_name"]
-                    rc: RootConfig = meta["root"]
-                    wm_text = (rc.wm_text or "").strip() or settings.default_wm_text
+                    wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
+                    # 🔹 게시물별 앵커 우선
+                    anchor = meta.get("anchor") or settings.post_anchors.get(key) or settings.wm_anchor
                     for src in meta["files"]:
                         for (w, h) in settings.sizes:
                             try:
-                                img = self._process_image(src, (w, h), settings, wm_text)
+                                img = self._process_image(src, (w, h), settings, wm_text, anchor)
                                 dst = settings.output_root / post / f"{w}x{h}" / (src.stem + "_wm.jpg")
                                 save_jpeg(img, dst)
                             except Exception as e:
@@ -82,7 +87,7 @@ class AppController:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _process_image(self, src: Path, target: Tuple[int, int], settings: AppSettings, wm_text: str) -> Image.Image:
+    def _process_image(self, src: Path, target: Tuple[int, int], settings: AppSettings, wm_text: str, anchor) -> Image.Image:
         im = load_image(src)
         canvas = resize_contain(im, target, settings.bg_color)
         out = add_text_watermark(
@@ -93,7 +98,7 @@ class AppController:
             fill_rgb=settings.wm_fill_color,
             stroke_rgb=settings.wm_stroke_color,
             stroke_width=settings.wm_stroke_width,
-            anchor_norm=settings.wm_anchor,
-            font_path=settings.wm_font_path,  # 🔹 폰트 전달
+            anchor_norm=anchor,
+            font_path=settings.wm_font_path,
         )
         return out
