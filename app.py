@@ -1,7 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-App entry — Phase 3 (UI 컴포넌트 분리)
-"""
 from __future__ import annotations
 
 from controller import AppController
