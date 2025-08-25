@@ -24,70 +24,69 @@ class OptionsPanel(ttk.Frame):
     def __init__(self, master):
         super().__init__(master)
 
-        # Output + Size(단일)
+        # 출력 + 타겟 크기(단일)
         top = ttk.Frame(self); top.pack(fill="x")
-        ttk.Label(top, text="Output Root:").grid(row=0, column=0, sticky="w")
+        ttk.Label(top, text="출력 폴더:").grid(row=0, column=0, sticky="w")
         self.var_output = tk.StringVar()
         ttk.Entry(top, textvariable=self.var_output, width=50).grid(row=0, column=1, sticky="we", padx=4)
-        ttk.Button(top, text="Browse…", command=self._browse_output).grid(row=0, column=2, padx=4)
+        ttk.Button(top, text="찾기…", command=self._browse_output).grid(row=0, column=2, padx=4)
 
         size_frame = ttk.Frame(top); size_frame.grid(row=0, column=3, padx=8, sticky="w")
-        ttk.Label(size_frame, text="Target Size:").grid(row=0, column=0, sticky="w")
+        ttk.Label(size_frame, text="타겟 크기:").grid(row=0, column=0, sticky="w")
         preset = [f"{w}x{h}" for (w, h) in DEFAULT_SIZES]
         self.var_size = tk.StringVar(value=preset[0])
         self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset, width=12, state="readonly")
         self.cb_size.grid(row=1, column=0, sticky="w")
 
-        # Watermark + BG
-        wm = ttk.LabelFrame(self, text="Watermark (center) & Background"); wm.pack(fill="x", pady=(6, 0))
+        # 워터마크 & 배경
+        wm = ttk.LabelFrame(self, text="워터마크(기본: 가운데) · 배경")
+        wm.pack(fill="x", pady=(6, 0))
 
-        ttk.Label(wm, text="Opacity").grid(row=0, column=0, sticky="e")
+        ttk.Label(wm, text="불투명도").grid(row=0, column=0, sticky="e")
         self.var_wm_opacity = tk.IntVar(value=30)
         ttk.Spinbox(wm, from_=0, to=100, textvariable=self.var_wm_opacity, width=5).grid(row=0, column=1, sticky="w")
 
-        ttk.Label(wm, text="Scale %").grid(row=0, column=2, sticky="e")
+        ttk.Label(wm, text="스케일 %").grid(row=0, column=2, sticky="e")
         self.var_wm_scale = tk.IntVar(value=5)
         ttk.Spinbox(wm, from_=1, to=50, textvariable=self.var_wm_scale, width=5).grid(row=0, column=3, sticky="w")
 
-        ttk.Label(wm, text="BG").grid(row=0, column=4, sticky="e")
+        ttk.Label(wm, text="배경색").grid(row=0, column=4, sticky="e")
         self.var_bg = tk.StringVar(value="#FFFFFF")
         self.ent_bg = ttk.Entry(wm, textvariable=self.var_bg, width=9)
         self.ent_bg.grid(row=0, column=5, sticky="w")
         self.sw_bg = _make_swatch(wm, self.var_bg.get()); self.sw_bg.grid(row=0, column=6, sticky="w", padx=4)
-        ttk.Button(wm, text="Pick…", command=lambda: self._pick_color(self.var_bg, self.sw_bg)).grid(row=0, column=7, sticky="w")
+        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_bg, self.sw_bg)).grid(row=0, column=7, sticky="w")
 
-        # Fill/Stroke
-        ttk.Label(wm, text="Fill").grid(row=1, column=0, sticky="e", pady=(4,2))
+        ttk.Label(wm, text="전경색").grid(row=1, column=0, sticky="e", pady=(4,2))
         self.var_fill = tk.StringVar(value="#000000")
         self.ent_fill = ttk.Entry(wm, textvariable=self.var_fill, width=9); self.ent_fill.grid(row=1, column=1, sticky="w", pady=(4,2))
         self.sw_fill = _make_swatch(wm, self.var_fill.get()); self.sw_fill.grid(row=1, column=2, sticky="w", padx=4)
-        ttk.Button(wm, text="Pick…", command=lambda: self._pick_color(self.var_fill, self.sw_fill)).grid(row=1, column=3, sticky="w")
+        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_fill, self.sw_fill)).grid(row=1, column=3, sticky="w")
 
-        ttk.Label(wm, text="Stroke").grid(row=1, column=4, sticky="e")
+        ttk.Label(wm, text="외곽선").grid(row=1, column=4, sticky="e")
         self.var_stroke = tk.StringVar(value="#FFFFFF")
         self.ent_stroke = ttk.Entry(wm, textvariable=self.var_stroke, width=9); self.ent_stroke.grid(row=1, column=5, sticky="w")
         self.sw_stroke = _make_swatch(wm, self.var_stroke.get()); self.sw_stroke.grid(row=1, column=6, sticky="w", padx=4)
-        ttk.Button(wm, text="Pick…", command=lambda: self._pick_color(self.var_stroke, self.sw_stroke)).grid(row=1, column=7, sticky="w")
+        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_stroke, self.sw_stroke)).grid(row=1, column=7, sticky="w")
 
-        ttk.Label(wm, text="Stroke W").grid(row=1, column=8, sticky="e")
+        ttk.Label(wm, text="외곽선 두께").grid(row=1, column=8, sticky="e")
         self.var_stroke_w = tk.IntVar(value=2)
         ttk.Spinbox(wm, from_=0, to=20, textvariable=self.var_stroke_w, width=5).grid(row=1, column=9, sticky="w")
 
-        # 🔹 Font file
-        ttk.Label(wm, text="Font file").grid(row=2, column=0, sticky="e", pady=(4,4))
+        ttk.Label(wm, text="폰트 파일").grid(row=2, column=0, sticky="e", pady=(4,4))
         self.var_font = tk.StringVar(value="")
         ttk.Entry(wm, textvariable=self.var_font, width=50).grid(row=2, column=1, columnspan=5, sticky="we", padx=(0,4), pady=(4,4))
-        ttk.Button(wm, text="Browse…", command=self._browse_font).grid(row=2, column=6, sticky="w", pady=(4,4))
-        ttk.Button(wm, text="Clear", command=lambda: self.var_font.set("")).grid(row=2, column=7, sticky="w", pady=(4,4))
+        ttk.Button(wm, text="찾기…", command=self._browse_font).grid(row=2, column=6, sticky="w", pady=(4,4))
+        ttk.Button(wm, text="지우기", command=lambda: self.var_font.set("")).grid(row=2, column=7, sticky="w", pady=(4,4))
 
-        # Roots
-        roots = ttk.LabelFrame(self, text="Roots (루트 폴더별 워터마크 텍스트)")
+        # 루트 리스트
+        roots = ttk.LabelFrame(self, text="루트 목록 (루트별 워터마크 텍스트)")
         roots.pack(fill="both", expand=True, pady=8)
 
         cols = ("root", "wm_text")
         self.tree = ttk.Treeview(roots, columns=cols, show="headings", height=6)
-        self.tree.heading("root", text="Root Path")
-        self.tree.heading("wm_text", text="WM Text (double-click to edit)")
+        self.tree.heading("root", text="루트 경로")
+        self.tree.heading("wm_text", text="워터마크 텍스트(더블 클릭 편집)")
         self.tree.column("root", width=520); self.tree.column("wm_text", width=260)
         self.tree.pack(fill="both", expand=True, side="left", padx=(6,0), pady=6)
 
@@ -101,15 +100,14 @@ class OptionsPanel(ttk.Frame):
             except Exception:
                 pass
 
-        self.tree.bind("<Double-1>", self._on_tree_double_click)  # inline edit wm_text
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
         self.tree.bind("<Delete>", lambda e: self._remove_root())
 
         btns = ttk.Frame(self); btns.pack(fill="x", pady=(0,6))
-        ttk.Button(btns, text="Add Root…", command=self._add_root).pack(side="left")
-        ttk.Button(btns, text="Remove", command=self._remove_root).pack(side="left", padx=6)
-        ttk.Button(btns, text="Remove All", command=self._remove_all).pack(side="left")
+        ttk.Button(btns, text="루트 추가…", command=self._add_root).pack(side="left")
+        ttk.Button(btns, text="삭제", command=self._remove_root).pack(side="left", padx=6)
+        ttk.Button(btns, text="모두 삭제", command=self._remove_all).pack(side="left")
 
-        # trace
         self.var_bg.trace_add("write", lambda *_: self._update_swatch(self.sw_bg, self.var_bg.get()))
         self.var_fill.trace_add("write", lambda *_: self._update_swatch(self.sw_fill, self.var_fill.get()))
         self.var_stroke.trace_add("write", lambda *_: self._update_swatch(self.sw_stroke, self.var_stroke.get()))
@@ -143,17 +141,17 @@ class OptionsPanel(ttk.Frame):
             self.var_fill.get().strip() or "#000000",
             self.var_stroke.get().strip() or "#FFFFFF",
             int(self.var_stroke_w.get()),
-            font_path or "",  # 🔹 추가 반환
+            font_path or "",
         )
 
     # ----- Browsers -----
     def _browse_output(self):
-        path = filedialog.askdirectory(title="Select Output Root")
+        path = filedialog.askdirectory(title="출력 폴더 선택")
         if path: self.var_output.set(path)
 
     def _browse_font(self):
         path = filedialog.askopenfilename(
-            title="Select a font file (TTF/OTF/TTC)",
+            title="폰트 파일 선택 (TTF/OTF/TTC)",
             filetypes=[("Font files", "*.ttf *.otf *.ttc"), ("All files", "*.*")]
         )
         if path:
@@ -167,18 +165,18 @@ class OptionsPanel(ttk.Frame):
         self.tree.insert("", "end", values=(path_str, wm_text))
 
     def _add_root(self):
-        path = filedialog.askdirectory(title="Select an Input Root (contains post folders)")
+        path = filedialog.askdirectory(title="입력 루트 선택 (게시물 폴더 포함)")
         if path: self._insert_or_update_root(path, DEFAULT_WM_TEXT)
 
     def _remove_root(self):
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Remove", "Select a root row first."); return
+            messagebox.showinfo("삭제", "먼저 루트 행을 선택하세요."); return
         for iid in sel: self.tree.delete(iid)
 
     def _remove_all(self):
         if not self.tree.get_children(): return
-        if messagebox.askyesno("Remove All", "Remove all roots from the list?"):
+        if messagebox.askyesno("모두 삭제", "루트 목록을 모두 삭제할까요?"):
             for iid in self.tree.get_children(): self.tree.delete(iid)
 
     # ----- DnD -----
@@ -217,7 +215,7 @@ class OptionsPanel(ttk.Frame):
     # ----- Color helpers -----
     def _pick_color(self, var: tk.StringVar, swatch: tk.Label):
         initial = var.get() or "#000000"
-        _, hx = colorchooser.askcolor(color=initial, title="Pick color")
+        _, hx = colorchooser.askcolor(color=initial, title="색상 선택")
         if hx:
             var.set(hx); self._update_swatch(swatch, hx)
 

@@ -300,16 +300,16 @@ class PreviewPane(ttk.Frame):
 
         # 상단 툴바
         top = ttk.Frame(self); top.pack(fill="x", pady=(2, 0))
-        self.lbl_before_cap = ttk.Label(top, text="Before", font=("", 10, "bold"))
-        self.lbl_after_cap = ttk.Label(top, text="After", font=("", 10, "bold"))
-        self.btn_swap = ttk.Button(top, text="Swap ◀▶", command=self._on_swap)
+        self.lbl_before_cap = ttk.Label(top, text="원본", font=("", 10, "bold"))
+        self.lbl_after_cap = ttk.Label(top, text="적용", font=("", 10, "bold"))
+        self.btn_swap = ttk.Button(top, text="좌우 교체 ◀▶", command=self._on_swap)
         self.lbl_before_cap.pack(side="left", padx=4)
         self.btn_swap.pack(side="left", padx=8)
         self.lbl_after_cap.pack(side="left", padx=4)
 
-        ttk.Label(top, text="Placement:").pack(side="left", padx=(16,2))
-        ttk.Radiobutton(top, text="3×3 Grid", variable=self._placement_mode, value="grid", command=self._on_mode_change).pack(side="left")
-        ttk.Radiobutton(top, text="Drag", variable=self._placement_mode, value="drag", command=self._on_mode_change).pack(side="left", padx=(4,0))
+        ttk.Label(top, text="배치:").pack(side="left", padx=(16,2))
+        ttk.Radiobutton(top, text="3×3 그리드", variable=self._placement_mode, value="grid", command=self._on_mode_change).pack(side="left")
+        ttk.Radiobutton(top, text="드래그", variable=self._placement_mode, value="drag", command=self._on_mode_change).pack(side="left", padx=(4,0))
 
         # 본문
         container = ttk.Frame(self); container.pack(fill="both", expand=True, pady=4)
@@ -358,7 +358,7 @@ class PreviewPane(ttk.Frame):
         self.canvas_before.set_image(None); self.canvas_after.set_image(None)
         self.canvas_before.select_grid_cell(None); self.canvas_after.select_grid_cell(None)
         self.canvas_before.set_marker_norm(None); self.canvas_after.set_marker_norm(None)
-        self.lbl_before_cap.configure(text="Before"); self.lbl_after_cap.configure(text="After")
+        self.lbl_before_cap.configure(text="원본"); self.lbl_after_cap.configure(text="적용")
 
     def set_anchor(self, norm: Tuple[float,float]):
         self._anchor_norm = (float(norm[0]), float(norm[1]))
@@ -394,11 +394,11 @@ class PreviewPane(ttk.Frame):
     def _on_swap(self):
         self._swapped = not self._swapped
         if self._swapped:
-            self.lbl_before_cap.configure(text="After (swapped)")
-            self.lbl_after_cap.configure(text="Before (swapped)")
+            self.lbl_before_cap.configure(text="적용 (좌우 교체)")
+            self.lbl_after_cap.configure(text="원본 (좌우 교체)")
         else:
-            self.lbl_before_cap.configure(text="Before")
-            self.lbl_after_cap.configure(text="After")
+            self.lbl_before_cap.configure(text="원본")
+            self.lbl_after_cap.configure(text="적용")
         if self._pil_before and self._pil_after:
             self.show(self._pil_before, self._pil_after)
 
