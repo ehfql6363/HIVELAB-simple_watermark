@@ -26,7 +26,7 @@ class AppSettings:
     sizes: List[Tuple[int, int]] = None
     bg_color: Tuple[int, int, int] = DEFAULT_BG
     wm_opacity: int = 30
-    wm_scale_pct: int = 5
+    wm_scale_pct: int = 20
     default_wm_text: str = DEFAULT_WM_TEXT
 
     wm_fill_color: Tuple[int, int, int] = DEFAULT_WM_FILL
@@ -82,7 +82,7 @@ class AppSettings:
             sizes=[tuple(map(int, s)) for s in sizes],
             bg_color=tup3(d.get("bg_color", DEFAULT_BG), DEFAULT_BG),
             wm_opacity=int(d.get("wm_opacity", 30)),
-            wm_scale_pct=int(d.get("wm_scale_pct", 5)),
+            wm_scale_pct=int(d.get("wm_scale_pct", 20)),
             default_wm_text=d.get("default_wm_text", DEFAULT_WM_TEXT),
             wm_fill_color=tup3(d.get("wm_fill_color", DEFAULT_WM_FILL), DEFAULT_WM_FILL),
             wm_stroke_color=tup3(d.get("wm_stroke_color", DEFAULT_WM_STROKE), DEFAULT_WM_STROKE),
