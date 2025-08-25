@@ -93,10 +93,21 @@ class OptionsPanel(ttk.Frame):
         scrollbar = ttk.Scrollbar(roots, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scrollbar.set); scrollbar.pack(side="right", fill="y")
 
+        # 기존: 트리뷰 DnD 등록 (유지)
         if DND_AVAILABLE:
             try:
                 self.tree.drop_target_register(DND_FILES)  # type: ignore
                 self.tree.dnd_bind("<<Drop>>", self._on_drop)
+            except Exception:
+                pass
+
+        # 최상위 윈도우에도 드롭 받도록 백업 등록
+        if DND_AVAILABLE:
+            try:
+                top = self.winfo_toplevel()
+                top.drop_target_register(DND_FILES)  # type: ignore
+                # 같은 핸들러 재사용 — 트리 위가 아니어도 정상 동작
+                top.dnd_bind("<<Drop>>", self._on_drop)
             except Exception:
                 pass
 

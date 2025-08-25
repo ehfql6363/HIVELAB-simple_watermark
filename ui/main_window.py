@@ -16,6 +16,14 @@ from ui.scrollframe import ScrollFrame
 class BaseTk(tk.Tk):
     pass
 
+try:
+    from tkinterdnd2 import TkinterDnD
+    class BaseTk(TkinterDnD.Tk):
+        pass
+except Exception:
+    class BaseTk(tk.Tk):
+        pass
+
 class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
         super().__init__()
