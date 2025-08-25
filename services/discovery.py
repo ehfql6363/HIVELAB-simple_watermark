@@ -6,7 +6,6 @@ def is_image(p: Path) -> bool:
     return p.is_file() and p.suffix.lower() in SUPPORTED_EXTS
 
 def numeric_key(p: Path):
-    # Prefer numeric stem ordering if possible (1,2,10)
     try:
         return (0, int(p.stem))
     except Exception:
