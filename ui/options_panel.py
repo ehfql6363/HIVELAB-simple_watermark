@@ -47,7 +47,7 @@ class OptionsPanel(ttk.Frame):
         ttk.Spinbox(wm, from_=0, to=100, textvariable=self.var_wm_opacity, width=5).grid(row=0, column=1, sticky="w")
 
         ttk.Label(wm, text="스케일 %").grid(row=0, column=2, sticky="e")
-        self.var_wm_scale = tk.IntVar(value=5)
+        self.var_wm_scale = tk.IntVar(value=20)
         ttk.Spinbox(wm, from_=1, to=50, textvariable=self.var_wm_scale, width=5).grid(row=0, column=3, sticky="w")
 
         ttk.Label(wm, text="배경색").grid(row=0, column=4, sticky="e")
@@ -233,3 +233,55 @@ class OptionsPanel(ttk.Frame):
     def _update_swatch(self, swatch: tk.Label, hx: str):
         try: swatch.configure(bg=hx)
         except Exception: swatch.configure(bg="#FFFFFF")
+
+    def set_initial_options(self, settings):
+        """AppSettings 로드값을 UI에 반영."""
+        # 출력 폴더
+        try:
+            self.var_output.set(str(settings.output_root or ""))
+        except:
+            pass
+        # 타겟 크기(첫 번째만 사용)
+        try:
+            s0 = settings.sizes[0] if settings.sizes else None
+            if s0:
+                self.var_size.set(f"{int(s0[0])}x{int(s0[1])}")
+        except:
+            pass
+        # 색/불투명/스케일/외곽선
+        try:
+            self.var_bg.set("#%02X%02X%02X" % settings.bg_color)
+        except:
+            pass
+        try:
+            self.var_wm_opacity.set(int(settings.wm_opacity))
+        except:
+            pass
+        try:
+            self.var_wm_scale.set(int(settings.wm_scale_pct))
+        except:
+            pass
+        try:
+            self.var_fill.set("#%02X%02X%02X" % settings.wm_fill_color)
+        except:
+            pass
+        try:
+            self.var_stroke.set("#%02X%02X%02X" % settings.wm_stroke_color)
+        except:
+            pass
+        try:
+            self.var_stroke_w.set(int(settings.wm_stroke_width))
+        except:
+            pass
+        # 폰트 파일
+        try:
+            self.var_font.set(str(settings.wm_font_path) if settings.wm_font_path else "")
+        except:
+            pass
+        # 스와치 갱신
+        try:
+            self._update_swatch(self.sw_bg, self.var_bg.get())
+            self._update_swatch(self.sw_fill, self.var_fill.get())
+            self._update_swatch(self.sw_stroke, self.var_stroke.get())
+        except:
+            pass
