@@ -1,24 +1,17 @@
 # -*- coding: utf-8 -*-
-"""
-MainWindow: 전체 UI 조립 (멀티 루트 + DnD 지원 베이스)
-- DnD는 선택적 의존성: pip install tkinterdnd2
-  모듈이 없으면 자동으로 일반 Tk로 동작합니다(드래그앤드롭만 비활성).
-"""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 from tkinter import ttk, messagebox
 import tkinter as tk
 
-# TkinterDnD가 있으면 그걸로 루트 창을 만들고, 없으면 기본 Tk 사용
+# DnD는 선택적
 try:
     from tkinterdnd2 import TkinterDnD  # type: ignore
     BaseTk = TkinterDnD.Tk
-    DND_AVAILABLE = True
 except Exception:
     BaseTk = tk.Tk
-    DND_AVAILABLE = False
 
 from settings import AppSettings, DEFAULT_SIZES, hex_to_rgb, DEFAULT_WM_TEXT, RootConfig
 from controller import AppController
@@ -34,6 +27,7 @@ class MainWindow(BaseTk):
         self.geometry("1180x760")
 
         self.controller = controller
+        # 스캔 결과 전체(원본)
         self.posts: Dict[str, dict] = {}
 
         self._build_ui()
@@ -53,31 +47,23 @@ class MainWindow(BaseTk):
         self.status = StatusBar(self, on_start=self.on_start_batch)
         self.status.pack(fill="x", padx=8, pady=6)
 
-        # 상태 표시(선택): DnD 가능 여부 안내
-        if not DND_AVAILABLE:
-            tip = ttk.Label(self, text="(Optional) Drag & Drop: pip install tkinterdnd2", foreground="#777")
-            tip.pack(anchor="w", padx=10, pady=(0, 8))
-
     # -------- Callbacks --------
     def on_scan(self):
         roots = self.opt.get_roots()
         if not roots:
             messagebox.showerror("Error", "Add at least one Input Root."); return
         self.posts = self.controller.scan_posts_multi(roots)
-        self.post_list.set_posts(self.posts)
+        self.post_list.set_posts(self.posts)   # 리스트에 채우고, 여기서부터는 리스트에 남아있는 항목만 처리
 
     def on_select_post(self, _name: str | None):
         self.preview.clear()
 
     def _collect_settings(self) -> AppSettings:
         sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots = self.opt.collect_options()
-        if not out_root_str:
+        if not out_root_str and roots:
             messagebox.showinfo("Output", "Output Root is empty. It will be created as <first_root>/export.")
-        if roots:
-            default_out = Path(roots[0].path) / "export"
-        else:
-            default_out = Path("export")
-        settings = AppSettings(
+        default_out = (Path(roots[0].path) / "export") if roots else Path("export")
+        return AppSettings(
             output_root=Path(out_root_str) if out_root_str else default_out,
             sizes=sizes if sizes else list(DEFAULT_SIZES),
             bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
@@ -85,7 +71,6 @@ class MainWindow(BaseTk):
             wm_scale_pct=int(wm_scale),
             default_wm_text=DEFAULT_WM_TEXT,
         )
-        return settings
 
     def on_preview(self):
         key = self.post_list.get_selected_post()
@@ -102,10 +87,16 @@ class MainWindow(BaseTk):
         self.preview.show(before_img, after_img)
 
     def on_start_batch(self):
-        if not self.posts:
-            messagebox.showinfo("Run", "No posts found. Click 'Scan Posts' first."); return
+        # 현재 리스트에 남아있는 항목만 처리
+        visible_keys = self.post_list.get_all_keys()
+        if not visible_keys:
+            messagebox.showinfo("Run", "No posts to process. (The list is empty)"); return
+
+        # 원본 dict에서 필요한 것만 추출
+        visible_posts = {k: self.posts[k] for k in visible_keys if k in self.posts}
+
         settings = self._collect_settings()
-        total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
+        total = sum(len(meta["files"]) for meta in visible_posts.values()) * len(settings.sizes)
         if total == 0:
             messagebox.showinfo("Run", "Nothing to process."); return
 
@@ -119,4 +110,4 @@ class MainWindow(BaseTk):
         def on_error(msg: str):
             messagebox.showerror("Run Error", msg)
 
-        self.controller.start_batch(settings, self.posts, on_progress, on_done, on_error)
+        self.controller.start_batch(settings, visible_posts, on_progress, on_done, on_error)
