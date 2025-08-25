@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
-from typing import Callable, List, Optional, Dict
+from typing import Callable, List, Optional, Dict, Set
 from PIL import Image, ImageTk, ImageOps  # ImageOps: EXIF 회전 보정
 
 class ThumbGallery(ttk.Frame):
@@ -29,6 +29,10 @@ class ThumbGallery(ttk.Frame):
         self.inner.bind("<Configure>", self._on_inner_config)
         self.canvas.bind("<Configure>", self._on_canvas_config)
 
+        # 배지 상태
+        self._badges: Dict[Path, tk.Canvas] = {}
+        self._badge_paths: Set[Path] = set()
+
         # ✅ 휠: 갤러리 영역에 마우스가 올라오면 전역 바인딩, 벗어나면 해제
         self._wheel_bound = False
         for w in (self, self.canvas, self.inner, self.vbar):
@@ -46,6 +50,8 @@ class ThumbGallery(ttk.Frame):
         self._tiles.clear()
         self._imgs.clear()
         self._active = None
+        self._badge_paths.clear()
+        self._badges.clear()
         self._update_scroll()
 
     def set_files(self, files: List[Path]):
@@ -91,10 +97,46 @@ class ThumbGallery(ttk.Frame):
 
             self._tiles[p] = tile
 
+            # ✅ 타일 생성 직후, 배지 필요하면 표시
+            if p in self._badge_paths:
+                self._show_badge_for(p)
+
         # 그리드 확장성
         for c in range(self.cols):
             self.inner.grid_columnconfigure(c, weight=1)
         self._update_scroll()
+
+    # ✅ 공개 API: 앵커가 있는 이미지들을 배지로 표시
+    def set_badged(self, paths: Set[Path]):
+        self._badge_paths = set(paths)
+        # 이미 있는 타일 기준으로 표시/제거
+        for p, tile in self._tiles.items():
+            has = p in self._badge_paths
+            exists = p in self._badges
+            if has and not exists:
+                self._show_badge_for(p)
+            elif not has and exists:
+                self._hide_badge_for(p)
+
+    # ----- 내부: 배지 그리기/지우기 -----
+    def _show_badge_for(self, p: Path):
+        tile = self._tiles.get(p)
+        if not tile or p in self._badges:
+            return
+        # 작은 원형 점(초록) 캔버스
+        badge = tk.Canvas(tile, width=14, height=14, highlightthickness=0,
+                          bd=0, bg=tile.cget("background"))
+        badge.place(relx=1.0, x=-6, y=6, anchor="ne")
+        badge.create_oval(2, 2, 12, 12, fill="#22c55e", outline="white", width=1)
+        self._badges[p] = badge
+
+    def _hide_badge_for(self, p: Path):
+        w = self._badges.pop(p, None)
+        if w:
+            try:
+                w.destroy()
+            except:
+                pass
 
     def set_active(self, path: Optional[Path]):
         if self._active and self._active in self._tiles:

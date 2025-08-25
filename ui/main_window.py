@@ -165,6 +165,7 @@ class MainWindow(BaseTk):
         # 새 스캔 → 갤러리/선택 초기화
         self._active_src = None
         self.gallery.clear()
+        self.gallery.set_badged(set())
 
     def on_select_post(self, key: str | None):
         # 선택이 바뀌면: 갤러리 구성, 활성 이미지 초기화
@@ -175,6 +176,10 @@ class MainWindow(BaseTk):
             self.gallery.set_active(None)
             # 커서용 앵커는 '이 게시물 앵커 or 기본값'
             self._wm_anchor = tuple(self.posts[key].get("anchor") or self.app_settings.wm_anchor)
+
+            # ✅ 이 게시물의 per-image 앵커들을 배지로 표시
+            img_map = self.posts[key].get("img_anchors") or {}
+            self.gallery.set_badged(set(img_map.keys()))
 
     def _on_activate_image(self, path: Path):
         # 썸네일 더블클릭 → 해당 이미지 편집 모드
@@ -231,7 +236,6 @@ class MainWindow(BaseTk):
         if not key or key not in self.posts:
             return
 
-        # 이미지 편집 모드라면 이미지 앵커로 저장, 아니면 게시물 앵커로 저장
         meta = self.posts[key]
         if self._active_src:
             img_map = meta.get("img_anchors")
@@ -242,6 +246,11 @@ class MainWindow(BaseTk):
             meta["anchor"] = (float(norm_xy[0]), float(norm_xy[1]))
 
         self._wm_anchor = (float(norm_xy[0]), float(norm_xy[1]))
+
+        # ✅ 갤러리 배지 갱신 (이미지별 앵커 상태 반영)
+        img_map = meta.get("img_anchors") or {}
+        self.gallery.set_badged(set(img_map.keys()))
+
         # 미리보기 갱신
         self.on_preview()
 
