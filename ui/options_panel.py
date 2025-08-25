@@ -2,7 +2,7 @@
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
-from typing import List
+from typing import List, Optional, Callable, Tuple
 from pathlib import Path
 from settings import DEFAULT_SIZES, DEFAULT_WM_TEXT, RootConfig
 
@@ -21,8 +21,12 @@ def _make_swatch(parent, hex_color: str):
     return sw
 
 class OptionsPanel(ttk.Frame):
-    def __init__(self, master):
+    """옵션 패널 (출력/크기/색/폰트/루트 목록) + 파일 다이얼로그 최근 폴더 기억"""
+    def __init__(self, master, on_change: Optional[Callable[[], None]] = None):
         super().__init__(master)
+        self._on_change = on_change
+        self._recent_output_dir: Optional[Path] = None
+        self._recent_font_dir: Optional[Path] = None
 
         # 출력 + 타겟 크기(단일)
         top = ttk.Frame(self); top.pack(fill="x")
@@ -37,6 +41,7 @@ class OptionsPanel(ttk.Frame):
         self.var_size = tk.StringVar(value=preset[0])
         self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset, width=12, state="readonly")
         self.cb_size.grid(row=1, column=0, sticky="w")
+        self.cb_size.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
 
         # 워터마크 & 배경
         wm = ttk.LabelFrame(self, text="워터마크(기본: 가운데) · 배경")
@@ -44,11 +49,13 @@ class OptionsPanel(ttk.Frame):
 
         ttk.Label(wm, text="불투명도").grid(row=0, column=0, sticky="e")
         self.var_wm_opacity = tk.IntVar(value=30)
-        ttk.Spinbox(wm, from_=0, to=100, textvariable=self.var_wm_opacity, width=5).grid(row=0, column=1, sticky="w")
+        ttk.Spinbox(wm, from_=0, to=100, textvariable=self.var_wm_opacity, width=5,
+                    command=self._notify_change).grid(row=0, column=1, sticky="w")
 
         ttk.Label(wm, text="스케일 %").grid(row=0, column=2, sticky="e")
         self.var_wm_scale = tk.IntVar(value=20)
-        ttk.Spinbox(wm, from_=1, to=50, textvariable=self.var_wm_scale, width=5).grid(row=0, column=3, sticky="w")
+        ttk.Spinbox(wm, from_=1, to=50, textvariable=self.var_wm_scale, width=5,
+                    command=self._notify_change).grid(row=0, column=3, sticky="w")
 
         ttk.Label(wm, text="배경색").grid(row=0, column=4, sticky="e")
         self.var_bg = tk.StringVar(value="#FFFFFF")
@@ -57,7 +64,7 @@ class OptionsPanel(ttk.Frame):
         self.sw_bg = _make_swatch(wm, self.var_bg.get()); self.sw_bg.grid(row=0, column=6, sticky="w", padx=4)
         ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_bg, self.sw_bg)).grid(row=0, column=7, sticky="w")
 
-        ttk.Label(wm, text="글자색").grid(row=1, column=0, sticky="e", pady=(4,2))
+        ttk.Label(wm, text="전경색").grid(row=1, column=0, sticky="e", pady=(4,2))
         self.var_fill = tk.StringVar(value="#000000")
         self.ent_fill = ttk.Entry(wm, textvariable=self.var_fill, width=9); self.ent_fill.grid(row=1, column=1, sticky="w", pady=(4,2))
         self.sw_fill = _make_swatch(wm, self.var_fill.get()); self.sw_fill.grid(row=1, column=2, sticky="w", padx=4)
@@ -71,15 +78,16 @@ class OptionsPanel(ttk.Frame):
 
         ttk.Label(wm, text="외곽선 두께").grid(row=1, column=8, sticky="e")
         self.var_stroke_w = tk.IntVar(value=2)
-        ttk.Spinbox(wm, from_=0, to=20, textvariable=self.var_stroke_w, width=5).grid(row=1, column=9, sticky="w")
+        ttk.Spinbox(wm, from_=0, to=20, textvariable=self.var_stroke_w, width=5,
+                    command=self._notify_change).grid(row=1, column=9, sticky="w")
 
         ttk.Label(wm, text="폰트 파일").grid(row=2, column=0, sticky="e", pady=(4,4))
         self.var_font = tk.StringVar(value="")
         ttk.Entry(wm, textvariable=self.var_font, width=50).grid(row=2, column=1, columnspan=5, sticky="we", padx=(0,4), pady=(4,4))
         ttk.Button(wm, text="찾기…", command=self._browse_font).grid(row=2, column=6, sticky="w", pady=(4,4))
-        ttk.Button(wm, text="지우기", command=lambda: self.var_font.set("")).grid(row=2, column=7, sticky="w", pady=(4,4))
+        ttk.Button(wm, text="지우기", command=self._clear_font).grid(row=2, column=7, sticky="w", pady=(4,4))
 
-        # 루트 리스트
+        # 루트 목록
         roots = ttk.LabelFrame(self, text="루트 목록 (루트별 워터마크 텍스트)")
         roots.pack(fill="both", expand=True, pady=8)
 
@@ -88,25 +96,21 @@ class OptionsPanel(ttk.Frame):
         self.tree.heading("root", text="루트 경로")
         self.tree.heading("wm_text", text="워터마크 텍스트(더블 클릭 편집)")
         self.tree.column("root", width=520); self.tree.column("wm_text", width=260)
-        self.tree.pack(fill="both", expand=True, side="left", padx=(6,0), pady=6)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(6,0), pady=6)
 
         scrollbar = ttk.Scrollbar(roots, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scrollbar.set); scrollbar.pack(side="right", fill="y")
 
-        # 기존: 트리뷰 DnD 등록 (유지)
+        # DnD
         if DND_AVAILABLE:
             try:
                 self.tree.drop_target_register(DND_FILES)  # type: ignore
                 self.tree.dnd_bind("<<Drop>>", self._on_drop)
             except Exception:
                 pass
-
-        # 최상위 윈도우에도 드롭 받도록 백업 등록
-        if DND_AVAILABLE:
             try:
                 top = self.winfo_toplevel()
                 top.drop_target_register(DND_FILES)  # type: ignore
-                # 같은 핸들러 재사용 — 트리 위가 아니어도 정상 동작
                 top.dnd_bind("<<Drop>>", self._on_drop)
             except Exception:
                 pass
@@ -119,13 +123,14 @@ class OptionsPanel(ttk.Frame):
         ttk.Button(btns, text="삭제", command=self._remove_root).pack(side="left", padx=6)
         ttk.Button(btns, text="모두 삭제", command=self._remove_all).pack(side="left")
 
+        # 스와치 동기
         self.var_bg.trace_add("write", lambda *_: self._update_swatch(self.sw_bg, self.var_bg.get()))
         self.var_fill.trace_add("write", lambda *_: self._update_swatch(self.sw_fill, self.var_fill.get()))
         self.var_stroke.trace_add("write", lambda *_: self._update_swatch(self.sw_stroke, self.var_stroke.get()))
 
         self._edit_entry = None; self._edit_iid = None; self._edit_col = None
 
-    # ----- API -----
+    # ---------- 외부 API ----------
     def get_roots(self) -> List[RootConfig]:
         roots: List[RootConfig] = []
         for iid in self.tree.get_children():
@@ -155,20 +160,76 @@ class OptionsPanel(ttk.Frame):
             font_path or "",
         )
 
-    # ----- Browsers -----
+    def set_initial_options(self, settings):
+        try: self.var_output.set(str(settings.output_root or ""))
+        except: pass
+        try:
+            s0 = settings.sizes[0] if settings.sizes else None
+            if s0: self.var_size.set(f"{int(s0[0])}x{int(s0[1])}")
+        except: pass
+        try: self.var_bg.set("#%02X%02X%02X" % settings.bg_color)
+        except: pass
+        try: self.var_wm_opacity.set(int(settings.wm_opacity))
+        except: pass
+        try: self.var_wm_scale.set(int(settings.wm_scale_pct))
+        except: pass
+        try: self.var_fill.set("#%02X%02X%02X" % settings.wm_fill_color)
+        except: pass
+        try: self.var_stroke.set("#%02X%02X%02X" % settings.wm_stroke_color)
+        except: pass
+        try: self.var_stroke_w.set(int(settings.wm_stroke_width))
+        except: pass
+        try: self.var_font.set(str(settings.wm_font_path) if settings.wm_font_path else "")
+        except: pass
+        # 최근 폴더 기억
+        self._recent_output_dir = settings.last_dir_output_dialog
+        self._recent_font_dir = settings.last_dir_font_dialog
+        # 스와치
+        try:
+            self._update_swatch(self.sw_bg, self.var_bg.get())
+            self._update_swatch(self.sw_fill, self.var_fill.get())
+            self._update_swatch(self.sw_stroke, self.var_stroke.get())
+        except: pass
+
+    def get_recent_dirs(self) -> Tuple[Optional[Path], Optional[Path]]:
+        return (self._recent_output_dir, self._recent_font_dir)
+
+    def set_recent_dirs(self, out_dir: Optional[Path], font_dir: Optional[Path]):
+        self._recent_output_dir = out_dir
+        self._recent_font_dir = font_dir
+
+    # ---------- Browsers ----------
     def _browse_output(self):
-        path = filedialog.askdirectory(title="출력 폴더 선택")
-        if path: self.var_output.set(path)
+        # initialdir: 현재 값 > 최근 출력 > 홈
+        cur = Path(self.var_output.get().strip()) if self.var_output.get().strip() else None
+        initial = str(cur if (cur and cur.exists()) else (self._recent_output_dir or Path.home()))
+        path = filedialog.askdirectory(title="출력 폴더 선택", initialdir=initial)
+        if path:
+            self.var_output.set(path)
+            self._recent_output_dir = Path(path)
+            self._notify_change()
 
     def _browse_font(self):
+        # initialdir: 현재 파일의 부모 > 최근 폰트 > 홈
+        curf = self.var_font.get().strip()
+        parent = Path(curf).parent if curf else None
+        initial = str(parent if (parent and parent.exists()) else (self._recent_font_dir or Path.home()))
         path = filedialog.askopenfilename(
             title="폰트 파일 선택 (TTF/OTF/TTC)",
-            filetypes=[("Font files", "*.ttf *.otf *.ttc"), ("All files", "*.*")]
+            filetypes=[("Font files", "*.ttf *.otf *.ttc"), ("All files", "*.*")],
+            initialdir=initial
         )
         if path:
             self.var_font.set(path)
+            try: self._recent_font_dir = Path(path).parent
+            except: pass
+            self._notify_change()
 
-    # ----- Roots mgmt -----
+    def _clear_font(self):
+        self.var_font.set("")
+        self._notify_change()
+
+    # ---------- Roots mgmt ----------
     def _insert_or_update_root(self, path_str: str, wm_text: str = DEFAULT_WM_TEXT):
         for iid in self.tree.get_children():
             if self.tree.set(iid, "root") == path_str:
@@ -176,13 +237,14 @@ class OptionsPanel(ttk.Frame):
         self.tree.insert("", "end", values=(path_str, wm_text))
 
     def _add_root(self):
-        path = filedialog.askdirectory(title="입력 루트 선택 (게시물 폴더 포함)")
+        base = self._recent_output_dir or Path.home()
+        path = filedialog.askdirectory(title="입력 루트 선택 (게시물 폴더 포함)", initialdir=str(base))
         if path: self._insert_or_update_root(path, DEFAULT_WM_TEXT)
 
     def _remove_root(self):
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("삭제", "먼저 루트 행을 선택하세요."); return
+            messagebox.showinfo("삭제", "삭제할 루트를 선택하세요."); return
         for iid in sel: self.tree.delete(iid)
 
     def _remove_all(self):
@@ -190,7 +252,7 @@ class OptionsPanel(ttk.Frame):
         if messagebox.askyesno("모두 삭제", "루트 목록을 모두 삭제할까요?"):
             for iid in self.tree.get_children(): self.tree.delete(iid)
 
-    # ----- DnD -----
+    # ---------- DnD ----------
     def _on_drop(self, event):
         try: paths = self.tk.splitlist(event.data)
         except Exception: paths = [event.data]
@@ -201,7 +263,7 @@ class OptionsPanel(ttk.Frame):
             if path.is_dir():
                 self._insert_or_update_root(str(path), DEFAULT_WM_TEXT)
 
-    # ----- Inline edit (wm_text) -----
+    # ---------- Inline edit ----------
     def _on_tree_double_click(self, event):
         rowid = self.tree.identify_row(event.y)
         colid = self.tree.identify_column(event.x)
@@ -223,65 +285,18 @@ class OptionsPanel(ttk.Frame):
             self.tree.set(self._edit_iid, "wm_text", self._edit_entry.get())
         self._edit_entry.destroy(); self._edit_entry = None; self._edit_iid = None; self._edit_col = None
 
-    # ----- Color helpers -----
+    # ---------- Color helpers ----------
     def _pick_color(self, var: tk.StringVar, swatch: tk.Label):
         initial = var.get() or "#000000"
         _, hx = colorchooser.askcolor(color=initial, title="색상 선택")
         if hx:
-            var.set(hx); self._update_swatch(swatch, hx)
+            var.set(hx); self._update_swatch(swatch, hx); self._notify_change()
 
     def _update_swatch(self, swatch: tk.Label, hx: str):
         try: swatch.configure(bg=hx)
         except Exception: swatch.configure(bg="#FFFFFF")
 
-    def set_initial_options(self, settings):
-        """AppSettings 로드값을 UI에 반영."""
-        # 출력 폴더
-        try:
-            self.var_output.set(str(settings.output_root or ""))
-        except:
-            pass
-        # 타겟 크기(첫 번째만 사용)
-        try:
-            s0 = settings.sizes[0] if settings.sizes else None
-            if s0:
-                self.var_size.set(f"{int(s0[0])}x{int(s0[1])}")
-        except:
-            pass
-        # 색/불투명/스케일/외곽선
-        try:
-            self.var_bg.set("#%02X%02X%02X" % settings.bg_color)
-        except:
-            pass
-        try:
-            self.var_wm_opacity.set(int(settings.wm_opacity))
-        except:
-            pass
-        try:
-            self.var_wm_scale.set(int(settings.wm_scale_pct))
-        except:
-            pass
-        try:
-            self.var_fill.set("#%02X%02X%02X" % settings.wm_fill_color)
-        except:
-            pass
-        try:
-            self.var_stroke.set("#%02X%02X%02X" % settings.wm_stroke_color)
-        except:
-            pass
-        try:
-            self.var_stroke_w.set(int(settings.wm_stroke_width))
-        except:
-            pass
-        # 폰트 파일
-        try:
-            self.var_font.set(str(settings.wm_font_path) if settings.wm_font_path else "")
-        except:
-            pass
-        # 스와치 갱신
-        try:
-            self._update_swatch(self.sw_bg, self.var_bg.get())
-            self._update_swatch(self.sw_fill, self.var_fill.get())
-            self._update_swatch(self.sw_stroke, self.var_stroke.get())
-        except:
-            pass
+    # ---------- change notify ----------
+    def _notify_change(self):
+        if callable(self._on_change):
+            self._on_change()
