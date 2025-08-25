@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Dict, List, Tuple, Callable
 from PIL import Image
@@ -43,7 +42,8 @@ class AppController:
             fill_rgb=settings.wm_fill_color,
             stroke_rgb=settings.wm_stroke_color,
             stroke_width=settings.wm_stroke_width,
-            anchor_norm=settings.wm_anchor,  # 🔹 위치 반영
+            anchor_norm=settings.wm_anchor,
+            font_path=settings.wm_font_path,  # 🔹 폰트 전달
         )
         return before, after
 
@@ -93,6 +93,7 @@ class AppController:
             fill_rgb=settings.wm_fill_color,
             stroke_rgb=settings.wm_stroke_color,
             stroke_width=settings.wm_stroke_width,
-            anchor_norm=settings.wm_anchor,  # 🔹 위치 반영
+            anchor_norm=settings.wm_anchor,
+            font_path=settings.wm_font_path,  # 🔹 폰트 전달
         )
         return out
