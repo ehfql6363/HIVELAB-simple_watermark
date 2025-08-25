@@ -59,10 +59,13 @@ class MainWindow(BaseTk):
         self.preview.clear()
 
     def _collect_settings(self) -> AppSettings:
-        sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots = self.opt.collect_options()
+        (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
+         wm_fill_hex, wm_stroke_hex, wm_stroke_w) = self.opt.collect_options()
+
         if not out_root_str and roots:
             messagebox.showinfo("Output", "Output Root is empty. It will be created as <first_root>/export.")
         default_out = (Path(roots[0].path) / "export") if roots else Path("export")
+
         return AppSettings(
             output_root=Path(out_root_str) if out_root_str else default_out,
             sizes=sizes if sizes else list(DEFAULT_SIZES),
@@ -70,6 +73,9 @@ class MainWindow(BaseTk):
             wm_opacity=int(wm_opacity),
             wm_scale_pct=int(wm_scale),
             default_wm_text=DEFAULT_WM_TEXT,
+            wm_fill_color=hex_to_rgb(wm_fill_hex or "#000000"),
+            wm_stroke_color=hex_to_rgb(wm_stroke_hex or "#FFFFFF"),
+            wm_stroke_width=int(wm_stroke_w),
         )
 
     def on_preview(self):
