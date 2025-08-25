@@ -207,8 +207,7 @@ class _CheckerCanvas(tk.Canvas):
         rx1 = int(x0 + (ix + 1) * cw); ry1 = int(y0 + (iy + 1) * ch)
         self._cell_sel_id = self.create_rectangle(
             rx0, ry0, rx1, ry1,
-            fill="#66CCFF", outline="#1E90FF", width=1,
-            stipple="gray25", tags="cellsel"
+            fill="#38f448", outline="#38f448", width=1, tags="cellsel", stipple="gray25"
         )
         self.tag_raise("cellsel"); self.tag_raise("grid")
 
