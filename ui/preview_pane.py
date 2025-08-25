@@ -2,34 +2,48 @@
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
+from collections import deque
 from PIL import Image, ImageTk
 from typing import Callable, Tuple
 
 class _CheckerCanvas(tk.Canvas):
-    """체크보드 배경 + 중앙 정렬 이미지 + 오버레이(그리드/마커)."""
+    """체크보드 배경 + 중앙 정렬 이미지 + 오버레이(그리드/마커).
+    안정성 강화:
+      - after_idle 렌더
+      - PhotoImage 강참조 유지
+      - anchor='nw' 배치 + 명시적 z-order
+      - 삭제된 item id 재사용 방지(_img_id 리셋 + 존재 검사)
+    """
     def __init__(self, master, tile=12, c1="#E6E6E6", c2="#C8C8C8", **kw):
         super().__init__(master, highlightthickness=0, background="white", **kw)
         self.tile = tile; self.c1, self.c2 = c1, c2
         self._pil_img: Image.Image | None = None
-        self._tk_img: ImageTk.PhotoImage | None = None
-        self._img_id = None
+        self._img_id: int | None = None
+        self._img_refs = deque(maxlen=4)  # PhotoImage 강참조 (최근 4개 보관)
         self._last = {"w":1,"h":1,"x0":0,"y0":0,"iw":1,"ih":1}  # canvas W/H, image bbox x0/y0/iw/ih
         self._grid_visible = False
         self._marker_norm: Tuple[float,float] | None = None
+        self._pending = False
         self.bind("<Configure>", self._on_resize)
 
     # --- public ---
     def set_image(self, pil_img: Image.Image | None):
         self._pil_img = pil_img
-        self._render()
+        if not self._pending:
+            self._pending = True
+            self.after_idle(self._render)
 
     def set_grid_visible(self, visible: bool):
         self._grid_visible = visible
-        self._render_grid()
+        if not self._pending:
+            self._pending = True
+            self.after_idle(self._render)
 
     def set_marker_norm(self, norm: Tuple[float,float] | None):
         self._marker_norm = norm
-        self._render_marker()
+        if not self._pending:
+            self._pending = True
+            self.after_idle(self._render)
 
     def event_to_norm(self, ex: int, ey: int) -> Tuple[float,float] | None:
         """캔버스 좌표 -> 이미지 기준 정규화(0..1). 이미지 밖이면 가장자리로 클램프."""
@@ -40,14 +54,13 @@ class _CheckerCanvas(tk.Canvas):
         y = min(max(ey, y0), y0 + ih)
         nx = (x - x0) / iw
         ny = (y - y0) / ih
-        # 안전 클램프
-        nx = min(1.0, max(0.0, nx))
-        ny = min(1.0, max(0.0, ny))
-        return (nx, ny)
+        return (min(1.0, max(0.0, nx)), min(1.0, max(0.0, ny)))
 
     # --- internal render ---
     def _on_resize(self, _):
-        self._render()
+        if not self._pending:
+            self._pending = True
+            self.after_idle(self._render)
 
     def _draw_checker(self, w: int, h: int):
         self.delete("checker")
@@ -59,65 +72,77 @@ class _CheckerCanvas(tk.Canvas):
                 x1 = min(x0 + t, w); y1 = min(y0 + t, h)
                 color = self.c1 if (r + c) % 2 == 0 else self.c2
                 self.create_rectangle(x0, y0, x1, y1, fill=color, width=0, tags="checker")
-        # 체크보드는 항상 맨 아래
         self.tag_lower("checker")
 
+    def _item_exists(self, item_id: int | None) -> bool:
+        if not item_id:
+            return False
+        try:
+            # 존재하지 않으면 TclError
+            self.type(item_id)
+            return True
+        except tk.TclError:
+            return False
+
     def _render(self):
+        self._pending = False
         w = max(1, self.winfo_width()); h = max(1, self.winfo_height())
+        if w < 4 or h < 4:
+            self.after(16, self._render); return
+
+        # 배경
         self._draw_checker(w, h)
 
         if self._pil_img is None:
+            # 이미지/오버레이 제거 + 아이디 리셋(중요!)
             self.delete("content"); self.delete("grid"); self.delete("marker")
+            self._img_id = None
             self._last.update({"w":w,"h":h,"x0":0,"y0":0,"iw":1,"ih":1})
             return
 
+        # 이미지 리사이즈 + 중앙 배치(anchor='nw' + 좌상단 좌표)
         W, H = self._pil_img.size
         scale = min(w / W, h / H, 1.0)
         iw, ih = max(1,int(W*scale)), max(1,int(H*scale))
         x0, y0 = (w - iw)//2, (h - ih)//2
 
         disp = self._pil_img.resize((iw, ih), Image.Resampling.LANCZOS)
-        self._tk_img = ImageTk.PhotoImage(disp)
-        if self._img_id is None:
-            self._img_id = self.create_image(w//2, h//2, image=self._tk_img, anchor="center", tags="content")
+        tkimg = ImageTk.PhotoImage(disp)
+        self._img_refs.append(tkimg)  # 강참조 유지
+
+        if not self._item_exists(self._img_id):
+            self._img_id = self.create_image(x0, y0, image=tkimg, anchor="nw", tags="content")
         else:
-            self.itemconfigure(self._img_id, image=self._tk_img)
-            self.coords(self._img_id, w//2, h//2)
-        # 이미지가 체크보드 위에 있도록
-        self.tag_raise("content")
+            self.itemconfigure(self._img_id, image=tkimg)
+            self.coords(self._img_id, x0, y0)
 
+        # Z-Order
+        self.tag_lower("checker"); self.tag_raise("content")
+        self.delete("grid"); self.delete("marker")
+
+        # 상태 저장
         self._last.update({"w":w,"h":h,"x0":x0,"y0":y0,"iw":iw,"ih":ih})
-        self._render_grid()
-        self._render_marker()
 
-    def _render_grid(self):
-        self.delete("grid")
-        if not self._grid_visible: return
-        x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
-        # 수직 2개, 수평 2개
-        for i in (1,2):
-            x = x0 + int(i * iw / 3)
-            self.create_line(x, y0, x, y0+ih, fill="#000000", width=1, stipple="gray50", tags="grid")
-        for i in (1,2):
-            y = y0 + int(i * ih / 3)
-            self.create_line(x0, y, x0+iw, y, fill="#000000", width=1, stipple="gray50", tags="grid")
-        self.tag_raise("grid")
+        # 그리드
+        if self._grid_visible:
+            for i in (1,2):
+                x = x0 + int(i * iw / 3)
+                self.create_line(x, y0, x, y0+ih, fill="#000000", width=1, stipple="gray50", tags="grid")
+            for i in (1,2):
+                y = y0 + int(i * ih / 3)
+                self.create_line(x0, y, x0+iw, y, fill="#000000", width=1, stipple="gray50", tags="grid")
+            self.tag_raise("grid")
 
-    def _render_marker(self):
-        self.delete("marker")
-        if not self._marker_norm:
-            return
-        x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
-        # 정규화 좌표 재클램프 (안전)
-        nx = min(1.0, max(0.0, float(self._marker_norm[0])))
-        ny = min(1.0, max(0.0, float(self._marker_norm[1])))
-        cx = x0 + nx * iw; cy = y0 + ny * ih
-        # 십자 + 원
-        self.create_line(cx-10, cy, cx+10, cy, fill="#000000", width=2, tags="marker")
-        self.create_line(cx, cy-10, cx, cy+10, fill="#000000", width=2, tags="marker")
-        self.create_oval(cx-6, cy-6, cx+6, cy+6, outline="#FFFFFF", width=2, tags="marker")
-        self.tag_raise("marker")
-        self.tag_raise("grid")
+        # 마커
+        if self._marker_norm:
+            nx = min(1.0, max(0.0, float(self._marker_norm[0])))
+            ny = min(1.0, max(0.0, float(self._marker_norm[1])))
+            cx = x0 + nx * iw; cy = y0 + ny * ih
+            self.create_line(cx-10, cy, cx+10, cy, fill="#000000", width=2, tags="marker")
+            self.create_line(cx, cy-10, cx, cy+10, fill="#000000", width=2, tags="marker")
+            self.create_oval(cx-6, cy-6, cx+6, cy+6, outline="#FFFFFF", width=2, tags="marker")
+            self.tag_raise("marker"); self.tag_raise("grid")
+
 
 class PreviewPane(ttk.Frame):
     """Before/After + Swap + (그리드/드래그) 위치 지정."""
@@ -135,15 +160,14 @@ class PreviewPane(ttk.Frame):
         self.btn_swap.pack(side="left", padx=8)
         self.lbl_after_cap.pack(side="left", padx=4)
 
-        # 배치 모드 선택
         ttk.Label(top, text="Placement:").pack(side="left", padx=(16,2))
         ttk.Radiobutton(top, text="3×3 Grid", variable=self._placement_mode, value="grid", command=self._on_mode_change).pack(side="left")
         ttk.Radiobutton(top, text="Drag", variable=self._placement_mode, value="drag", command=self._on_mode_change).pack(side="left", padx=(4,0))
 
         # 본문
-        grid = ttk.Frame(self); grid.pack(fill="both", expand=True, pady=4)
-        self.box_before = tk.Frame(grid, bd=1, relief="solid")
-        self.box_after  = tk.Frame(grid, bd=2, relief="solid")
+        container = ttk.Frame(self); container.pack(fill="both", expand=True, pady=4)
+        self.box_before = tk.Frame(container, bd=1, relief="solid")
+        self.box_after  = tk.Frame(container, bd=2, relief="solid")
         self.box_before.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         self.box_after.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
 
@@ -152,7 +176,7 @@ class PreviewPane(ttk.Frame):
         self.canvas_before.pack(fill="both", expand=True)
         self.canvas_after.pack(fill="both", expand=True)
 
-        grid.columnconfigure(0, weight=1); grid.columnconfigure(1, weight=1); grid.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1); container.columnconfigure(1, weight=1); container.rowconfigure(0, weight=1)
 
         self._pil_before: Image.Image | None = None
         self._pil_after: Image.Image | None = None
@@ -224,7 +248,6 @@ class PreviewPane(ttk.Frame):
             norm = cv.event_to_norm(e.x, e.y)
             if not norm: return
             nx, ny = norm
-            # 🔧 3x3 스냅 안전 클램프 (0..2)
             ix = min(2, max(0, int(nx * 3)))
             iy = min(2, max(0, int(ny * 3)))
             cx = (ix + 0.5) / 3.0
