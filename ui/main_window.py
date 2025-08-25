@@ -13,16 +13,12 @@ from ui.post_list import PostList
 from ui.status_bar import StatusBar
 from ui.scrollframe import ScrollFrame
 
-class BaseTk(tk.Tk):
-    pass
-
+# DnD 지원 루트
 try:
-    from tkinterdnd2 import TkinterDnD
-    class BaseTk(TkinterDnD.Tk):
-        pass
+    from tkinterdnd2 import TkinterDnD  # type: ignore
+    class BaseTk(TkinterDnD.Tk): pass
 except Exception:
-    class BaseTk(tk.Tk):
-        pass
+    class BaseTk(tk.Tk): pass
 
 class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
@@ -32,29 +28,33 @@ class MainWindow(BaseTk):
 
         self.controller = controller
         self.posts: Dict[str, dict] = {}
-        self._wm_anchor = (0.5, 0.5)
 
-        # 상단(스크롤) + 하단(고정) 레이아웃
+        # 🔹 설정 로드
+        self.app_settings = AppSettings.load()
+        self._wm_anchor = tuple(self.app_settings.wm_anchor)  # 기본 앵커
+
+        # 상단(스크롤) + 하단(고정)
         self.scroll = ScrollFrame(self)
         self.scroll.pack(side="top", fill="both", expand=True, padx=8, pady=(6, 0))
-
         self._build_scroll_content(self.scroll.inner)
 
-        # 하단 고정 상태바(시작/진행바 항상 보임)
         self.status = StatusBar(self, on_start=self.on_start_batch)
         self.status.pack(side="bottom", fill="x", padx=8, pady=8)
 
+        # 🔹 UI에 초기값 반영
+        self.opt.set_initial_options(self.app_settings)
+
+        # 🔹 종료 시 저장
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
     def _build_scroll_content(self, parent):
-        # 옵션 패널
         self.opt = OptionsPanel(parent)
         self.opt.pack(fill="x", pady=(0, 6))
 
-        # 중간 툴바 (한글화)
         tbar = ttk.Frame(parent); tbar.pack(fill="x", pady=(0, 6))
         ttk.Button(tbar, text="게시물 스캔", command=self.on_scan).pack(side="left")
         ttk.Button(tbar, text="미리보기", command=self.on_preview).pack(side="left", padx=6)
 
-        # 좌/우(게시물 리스트 / 미리보기)
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
 
@@ -66,10 +66,22 @@ class MainWindow(BaseTk):
 
     # ---- 콜백/로직 ----
     def _on_anchor_change(self, norm_xy):
-        self._wm_anchor = norm_xy
+        """미리보기에서 워터마크 위치 변경 → 게시물별로 즉시 저장 & 미리보기 반영."""
         key = self.post_list.get_selected_post()
-        if key and key in self.posts:
-            self.on_preview()  # 위치 반영 즉시 미리보기
+        if not key or key not in self.posts:
+            return
+        # 메모리 반영
+        self.posts[key]["anchor"] = (float(norm_xy[0]), float(norm_xy[1]))
+        self._wm_anchor = self.posts[key]["anchor"]
+        # 🔹 설정에도 게시물별 앵커 저장 + 즉시 저장
+        self.app_settings.post_anchors[key] = self._wm_anchor
+        self.app_settings.wm_anchor = tuple(self._wm_anchor)  # 최근값을 기본값처럼 유지
+        try:
+            self.app_settings.save()
+        except Exception:
+            pass
+        # 미리보기 재계산
+        self.on_preview()
 
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
@@ -79,10 +91,9 @@ class MainWindow(BaseTk):
             messagebox.showinfo("출력 폴더", "출력 폴더가 비어 있습니다. 첫 번째 루트의 export로 저장합니다.")
         default_out = (Path(roots[0].path) / "export") if roots else Path("export")
 
-        from settings import DEFAULT_SIZES as DS
-        return AppSettings(
+        s = AppSettings(
             output_root=Path(out_root_str) if out_root_str else default_out,
-            sizes=sizes if sizes else list(DS),
+            sizes=sizes if sizes else list(DEFAULT_SIZES),
             bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
             wm_opacity=int(wm_opacity),
             wm_scale_pct=int(wm_scale),
@@ -92,7 +103,9 @@ class MainWindow(BaseTk):
             wm_stroke_width=int(wm_stroke_w),
             wm_anchor=self._wm_anchor,
             wm_font_path=Path(wm_font_path_str) if wm_font_path_str else None,
+            post_anchors=dict(self.app_settings.post_anchors),  # 🔹 유지
         )
+        return s
 
     def on_scan(self):
         roots = self.opt.get_roots()
@@ -100,20 +113,26 @@ class MainWindow(BaseTk):
             messagebox.showinfo("루트 폴더", "먼저 루트 폴더를 추가하세요.")
             return
         self.posts = self.controller.scan_posts_multi(roots)
+
+        # 🔹 스캔 후, 저장된 게시물별 앵커 주입
+        for key, meta in self.posts.items():
+            if key in self.app_settings.post_anchors:
+                meta["anchor"] = tuple(self.app_settings.post_anchors[key])
+
         self.post_list.set_posts(self.posts)
 
     def on_select_post(self, key: str | None):
-        # 선택만 바뀌면 즉시 미리보기까지 자동으로 하지 않고, 버튼으로 제어
-        pass
+        # 선택만 바뀌면 자동 미리보기는 하지 않지만,
+        # 선택 게시물의 앵커를 현재 앵커로 유지
+        if key and key in self.posts:
+            self._wm_anchor = tuple(self.posts[key].get("anchor") or self.app_settings.post_anchors.get(key, self.app_settings.wm_anchor))
 
     def on_preview(self):
         key = self.post_list.get_selected_post()
         if not key:
-            messagebox.showinfo("미리보기", "게시물을 하나 선택하세요.")
-            return
+            messagebox.showinfo("미리보기", "게시물을 하나 선택하세요."); return
         if key not in self.posts or not self.posts[key]["files"]:
-            messagebox.showinfo("미리보기", "이 게시물에는 이미지가 없습니다.")
-            return
+            messagebox.showinfo("미리보기", "이 게시물에는 이미지가 없습니다."); return
 
         settings = self._collect_settings()
 
@@ -131,21 +150,24 @@ class MainWindow(BaseTk):
         }
         self.preview.set_wm_preview_config(wm_cfg)
 
+        # 🔹 이 게시물의 앵커 사용
+        anchor = tuple(meta.get("anchor") or self.app_settings.post_anchors.get(key, settings.wm_anchor))
+        self._wm_anchor = anchor
+
         try:
             before_img, after_img = self.controller.preview_by_key(key, self.posts, settings)
         except Exception as e:
-            messagebox.showerror("미리보기 오류", str(e))
-            return
+            messagebox.showerror("미리보기 오류", str(e)); return
 
         self.preview.show(before_img, after_img)
-        self.preview.set_anchor(self._wm_anchor)
+        self.preview.set_anchor(anchor)
 
     def on_start_batch(self):
         if not self.posts:
             messagebox.showinfo("시작", "스캔된 게시물이 없습니다.")
             return
         settings = self._collect_settings()
-        # 전체 작업량
+
         total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
         self.status.reset(total)
 
@@ -154,3 +176,15 @@ class MainWindow(BaseTk):
         def on_err(msg): self.status.log_error(msg)
 
         self.controller.start_batch(settings, self.posts, on_prog, on_done, on_err)
+
+    # ----- 종료 시 설정 저장 -----
+    def _on_close(self):
+        try:
+            s = self._collect_settings()
+            # 최신 앵커/게시물 앵커 반영(보수적으로 한 번 더)
+            s.wm_anchor = tuple(self._wm_anchor)
+            s.post_anchors.update({k: tuple(m.get("anchor")) for k, m in self.posts.items() if m.get("anchor")})
+            s.save()
+        except Exception:
+            pass
+        self.destroy()
