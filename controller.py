@@ -12,21 +12,10 @@ from services.resize import resize_contain
 from services.watermark import add_center_watermark
 from services.writer import save_jpeg
 
-# posts 구조:
-# {
-#   "RootName/PostName": {
-#       "root": RootConfig,
-#       "post_name": str,
-#       "files": [Path, ...]
-#   },
-#   ...
-# }
-
 class AppController:
     def __init__(self):
         self._processed = 0
 
-    # -------- Scan (multi roots) --------
     def scan_posts_multi(self, roots: List[RootConfig]) -> Dict[str, dict]:
         posts: Dict[str, dict] = {}
         for rc in roots:
@@ -37,10 +26,7 @@ class AppController:
                 posts[key] = {"root": rc, "post_name": post_name, "files": files}
         return posts
 
-    # -------- Preview --------
-    def preview_by_key(
-        self, key: str, posts: Dict[str, dict], settings: AppSettings
-    ) -> tuple[Image.Image, Image.Image]:
+    def preview_by_key(self, key: str, posts: Dict[str, dict], settings: AppSettings) -> tuple[Image.Image, Image.Image]:
         meta = posts.get(key)
         if not meta or not meta["files"]:
             raise ValueError("No images in this post.")
@@ -50,12 +36,16 @@ class AppController:
         canvas = resize_contain(before, settings.sizes[0], settings.bg_color)
         wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
         after = add_center_watermark(
-            canvas, text=wm_text,
-            opacity_pct=settings.wm_opacity, scale_pct=settings.wm_scale_pct
+            canvas,
+            text=wm_text,
+            opacity_pct=settings.wm_opacity,
+            scale_pct=settings.wm_scale_pct,
+            fill_rgb=settings.wm_fill_color,
+            stroke_rgb=settings.wm_stroke_color,
+            stroke_width=settings.wm_stroke_width,
         )
         return before, after
 
-    # -------- Batch --------
     def start_batch(
         self,
         settings: AppSettings,
@@ -91,12 +81,16 @@ class AppController:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # -------- Internal --------
     def _process_image(self, src: Path, target: Tuple[int, int], settings: AppSettings, wm_text: str) -> Image.Image:
         im = load_image(src)
         canvas = resize_contain(im, target, settings.bg_color)
         out = add_center_watermark(
-            canvas, text=wm_text,
-            opacity_pct=settings.wm_opacity, scale_pct=settings.wm_scale_pct
+            canvas,
+            text=wm_text,
+            opacity_pct=settings.wm_opacity,
+            scale_pct=settings.wm_scale_pct,
+            fill_rgb=settings.wm_fill_color,
+            stroke_rgb=settings.wm_stroke_color,
+            stroke_width=settings.wm_stroke_width,
         )
         return out
