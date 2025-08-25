@@ -26,7 +26,7 @@ class OptionsPanel(ttk.Frame):
     """
     - 루트 다중 등록 + 루트별 워터마크 텍스트
     - 공통 옵션: 출력 루트, 단일 Target Size, BG, Opacity/Scale
-    - 추가: WM Fill 색상/스와치/컬러피커, Stroke 색상/두께
+    - 추가: WM Fill 색상/스와치/컬러피커, Stroke 색상/두께, BG 컬러피커/스와치
     - 개선: DnD, 더블클릭 인라인 편집, Remove/Remove All
     """
     def __init__(self, master):
@@ -47,7 +47,7 @@ class OptionsPanel(ttk.Frame):
         self.cb_size.grid(row=1, column=0, sticky="w")
 
         # Watermark common params (center)
-        wm = ttk.LabelFrame(self, text="Watermark (center)"); wm.pack(fill="x", pady=(6, 0))
+        wm = ttk.LabelFrame(self, text="Watermark (center) & Background"); wm.pack(fill="x", pady=(6, 0))
 
         ttk.Label(wm, text="Opacity").grid(row=0, column=0, sticky="e", padx=(2,2))
         self.var_wm_opacity = tk.IntVar(value=30)
@@ -57,12 +57,15 @@ class OptionsPanel(ttk.Frame):
         self.var_wm_scale = tk.IntVar(value=5)
         ttk.Spinbox(wm, from_=1, to=50, textvariable=self.var_wm_scale, width=5).grid(row=0, column=3, sticky="w")
 
-        ttk.Label(wm, text="BG #RRGGBB").grid(row=0, column=4, sticky="e")
+        # --- BG 색상(패딩 캔버스) : 입력 + 스와치 + 피커 ---
+        ttk.Label(wm, text="BG").grid(row=0, column=4, sticky="e")
         self.var_bg = tk.StringVar(value="#FFFFFF")
-        ttk.Entry(wm, textvariable=self.var_bg, width=9).grid(row=0, column=5, sticky="w")
+        self.ent_bg = ttk.Entry(wm, textvariable=self.var_bg, width=9)
+        self.ent_bg.grid(row=0, column=5, sticky="w")
+        self.sw_bg = _make_swatch(wm, self.var_bg.get()); self.sw_bg.grid(row=0, column=6, sticky="w", padx=4)
+        ttk.Button(wm, text="Pick…", command=lambda: self._pick_color(self.var_bg, self.sw_bg)).grid(row=0, column=7, sticky="w")
 
-        # 색상 & 외곽선
-        # Fill
+        # --- WM 색상 & 외곽선 ---
         ttk.Label(wm, text="Fill").grid(row=1, column=0, sticky="e", padx=(2,2), pady=(4,2))
         self.var_fill = tk.StringVar(value="#000000")
         self.ent_fill = ttk.Entry(wm, textvariable=self.var_fill, width=9)
@@ -70,7 +73,6 @@ class OptionsPanel(ttk.Frame):
         self.sw_fill = _make_swatch(wm, self.var_fill.get()); self.sw_fill.grid(row=1, column=2, sticky="w", padx=4)
         ttk.Button(wm, text="Pick…", command=lambda: self._pick_color(self.var_fill, self.sw_fill)).grid(row=1, column=3, sticky="w")
 
-        # Stroke
         ttk.Label(wm, text="Stroke").grid(row=1, column=4, sticky="e", padx=(12,2))
         self.var_stroke = tk.StringVar(value="#FFFFFF")
         self.ent_stroke = ttk.Entry(wm, textvariable=self.var_stroke, width=9)
@@ -79,7 +81,7 @@ class OptionsPanel(ttk.Frame):
         ttk.Button(wm, text="Pick…", command=lambda: self._pick_color(self.var_stroke, self.sw_stroke)).grid(row=1, column=7, sticky="w")
 
         ttk.Label(wm, text="Stroke W").grid(row=1, column=8, sticky="e", padx=(12,2))
-        self.var_stroke_w = tk.IntVar(value=2)
+        self.var_stroke_w = tk.IntVar(value=1)
         ttk.Spinbox(wm, from_=0, to=20, textvariable=self.var_stroke_w, width=5).grid(row=1, column=9, sticky="w")
 
         # Roots (multi)
@@ -89,6 +91,7 @@ class OptionsPanel(ttk.Frame):
         cols = ("root", "wm_text")
         self.tree = ttk.Treeview(roots, columns=cols, show="headings", height=6)
         self.tree.heading("root", text="Root Path")
+               # 더블클릭으로 인라인 수정
         self.tree.heading("wm_text", text="WM Text (double-click to edit)")
         self.tree.column("root", width=520)
         self.tree.column("wm_text", width=260)
@@ -122,6 +125,7 @@ class OptionsPanel(ttk.Frame):
         self._edit_col: str | None = None
 
         # 스와치 자동 갱신
+        self.var_bg.trace_add("write", lambda *_: self._update_swatch(self.sw_bg, self.var_bg.get()))
         self.var_fill.trace_add("write", lambda *_: self._update_swatch(self.sw_fill, self.var_fill.get()))
         self.var_stroke.trace_add("write", lambda *_: self._update_swatch(self.sw_stroke, self.var_stroke.get()))
 
@@ -145,13 +149,13 @@ class OptionsPanel(ttk.Frame):
 
         return (
             sizes,
-            self.var_bg.get().strip(),
+            self.var_bg.get().strip(),                  # BG hex
             int(self.var_wm_opacity.get()),
             int(self.var_wm_scale.get()),
             self.var_output.get().strip(),
             self.get_roots(),
-            self.var_fill.get().strip() or "#000000",
-            self.var_stroke.get().strip() or "#FFFFFF",
+            self.var_fill.get().strip() or "#000000",   # WM fill hex
+            self.var_stroke.get().strip() or "#FFFFFF", # WM stroke hex
             int(self.var_stroke_w.get()),
         )
 
