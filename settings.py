@@ -7,8 +7,8 @@ DEFAULT_BG = (255, 255, 255)
 DEFAULT_WM_TEXT = "© YourBrand"
 
 # 새 기본값
-DEFAULT_WM_FILL = (0, 0, 0)         # 검정
-DEFAULT_WM_STROKE = (255, 255, 255) # 흰색
+DEFAULT_WM_FILL = (0, 0, 0)
+DEFAULT_WM_STROKE = (255, 255, 255)
 DEFAULT_WM_STROKE_W = 2
 
 @dataclass
@@ -25,10 +25,12 @@ class AppSettings:
     wm_scale_pct: int = 5
     default_wm_text: str = DEFAULT_WM_TEXT
 
-    # 새 필드
     wm_fill_color: Tuple[int, int, int] = DEFAULT_WM_FILL
     wm_stroke_color: Tuple[int, int, int] = DEFAULT_WM_STROKE
     wm_stroke_width: int = DEFAULT_WM_STROKE_W
+
+    # 🔹 새 필드: 워터마크 중심 위치(정규화 좌표, 0..1)
+    wm_anchor: Tuple[float, float] = (0.5, 0.5)
 
     def __post_init__(self):
         if self.sizes is None:
