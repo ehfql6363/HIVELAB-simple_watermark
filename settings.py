@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 DEFAULT_SIZES = [(1080, 1080), (1080, 1350), (1080, 1920)]
 DEFAULT_BG = (255, 255, 255)
-DEFAULT_WM_TEXT = "© YourBrand"
+DEFAULT_WM_TEXT = "㈜하이브랩"
 
 # 새 기본값
 DEFAULT_WM_FILL = (0, 0, 0)
