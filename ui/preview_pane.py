@@ -6,13 +6,17 @@ from collections import deque
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from typing import Callable, Tuple, Optional, Dict
 
-# ---- 폰트 헬퍼(미리보기 전용, services/watermark와 동일 아이디어) ----
 _DEFAULT_FONTS = [
     "arial.ttf", "tahoma.ttf", "segoeui.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
-def _pick_font(size: int):
+def _pick_font(size: int, font_path: Optional[str] = None):
+    if font_path:
+        try:
+            return ImageFont.truetype(font_path, size=size)
+        except Exception:
+            pass
     for cand in _DEFAULT_FONTS:
         try:
             return ImageFont.truetype(cand, size=size)
@@ -25,11 +29,11 @@ def _measure_text(font, text, stroke_width=0):
     bbox = d.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2):
+def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2, font_path: Optional[str]=None):
     best = low
     while low <= high:
         mid = (low + high) // 2
-        w, _ = _measure_text(_pick_font(mid), text, stroke_width=stroke_width)
+        w, _ = _measure_text(_pick_font(mid, font_path), text, stroke_width=stroke_width)
         if w <= target_w:
             best = mid; low = mid + 1
         else:
@@ -227,15 +231,17 @@ class _CheckerCanvas(tk.Canvas):
         fill = tuple(self._wm_cfg.get("fill", (0,0,0)))
         stroke = tuple(self._wm_cfg.get("stroke", (255,255,255)))
         sw = int(self._wm_cfg.get("stroke_w", 2))
+        font_path = self._wm_cfg.get("font_path") or None  # 🔹 추가
 
         target_w = max(1, int(min(iw, ih) * (scale_pct / 100.0)))
-        key = (txt, op, scale_pct, fill, stroke, sw, target_w)
+        key = (txt, op, scale_pct, fill, stroke, sw, target_w, font_path)
 
         if key == self._wm_sprite_key and self._wm_sprite_tk is not None:
             return  # 캐시 재사용
 
-        # 새 스프라이트 생성
-        font = _pick_font(_fit_font_by_width(txt, target_w, stroke_width=sw))
+        # 새 스프라이트 생성 (선택 폰트 우선)
+        font = _pick_font(_fit_font_by_width(txt, target_w, stroke_width=sw, font_path=font_path),
+                          font_path=font_path)
         tw, th = _measure_text(font, txt, stroke_width=sw)
         alpha = int(255 * (op / 100.0))
         fill_rgba = (fill[0], fill[1], fill[2], alpha)
@@ -247,8 +253,11 @@ class _CheckerCanvas(tk.Canvas):
 
         tkimg = ImageTk.PhotoImage(over)
         self._wm_sprite_tk = tkimg
-        self._wm_sprite_refs.append(tkimg)  # 강참조
+        self._wm_sprite_refs.append(tkimg)
         self._wm_sprite_key = key
+
+        if self._wmghost_id is not None:
+            self.itemconfigure(self._wmghost_id, image=self._wm_sprite_tk)
 
         # 기존 유령은 새 스프라이트로 교체
         if self._wmghost_id is not None:
