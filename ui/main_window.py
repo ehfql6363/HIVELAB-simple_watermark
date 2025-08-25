@@ -47,18 +47,27 @@ class MainWindow(BaseTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_scroll_content(self, parent):
-        # (A) on_change 콜백 연결
         self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
         self.opt.pack(fill="x", pady=(0, 6))
 
-        tbar = ttk.Frame(parent); tbar.pack(fill="x", pady=(0, 6))
+        tbar = ttk.Frame(parent);
+        tbar.pack(fill="x", pady=(0, 6))
         ttk.Button(tbar, text="게시물 스캔", command=self.on_scan).pack(side="left")
         ttk.Button(tbar, text="미리보기", command=self.on_preview).pack(side="left", padx=6)
 
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
-        self.post_list = PostList(mid, on_select=self.on_select_post); mid.add(self.post_list, weight=1)
-        self.preview = PreviewPane(mid, on_anchor_change=self._on_anchor_change); mid.add(self.preview, weight=3)
+
+        # 🔹 더블 클릭 시 미리보기 실행
+        self.post_list = PostList(
+            mid,
+            on_select=self.on_select_post,
+            on_activate=lambda key: self.on_preview(),
+        )
+        mid.add(self.post_list, weight=1)
+
+        self.preview = PreviewPane(mid, on_anchor_change=self._on_anchor_change)
+        mid.add(self.preview, weight=3)
 
     def _on_options_changed(self):
         # UI → settings 동기화
@@ -89,21 +98,13 @@ class MainWindow(BaseTk):
 
     # ---- 콜백/로직 ----
     def _on_anchor_change(self, norm_xy):
-        """미리보기에서 워터마크 위치 변경 → 게시물별로 즉시 저장 & 미리보기 반영."""
         key = self.post_list.get_selected_post()
         if not key or key not in self.posts:
             return
-        # 메모리 반영
+        # ✅ 세션 메모리만 갱신
         self.posts[key]["anchor"] = (float(norm_xy[0]), float(norm_xy[1]))
         self._wm_anchor = self.posts[key]["anchor"]
-        # 🔹 설정에도 게시물별 앵커 저장 + 즉시 저장
-        self.app_settings.post_anchors[key] = self._wm_anchor
-        self.app_settings.wm_anchor = tuple(self._wm_anchor)  # 최근값을 기본값처럼 유지
-        try:
-            self.app_settings.save()
-        except Exception:
-            pass
-        # 미리보기 재계산
+        # 미리보기만 갱신 (디스크 저장/설정 저장 없음)
         self.on_preview()
 
     def _collect_settings(self) -> AppSettings:
@@ -136,12 +137,7 @@ class MainWindow(BaseTk):
             messagebox.showinfo("루트 폴더", "먼저 루트 폴더를 추가하세요.")
             return
         self.posts = self.controller.scan_posts_multi(roots)
-
-        # 🔹 스캔 후, 저장된 게시물별 앵커 주입
-        for key, meta in self.posts.items():
-            if key in self.app_settings.post_anchors:
-                meta["anchor"] = tuple(self.app_settings.post_anchors[key])
-
+        # ✅ 설정 파일로부터 앵커 주입 없음 (세션 새로 시작)
         self.post_list.set_posts(self.posts)
 
     def on_select_post(self, key: str | None):
@@ -174,7 +170,7 @@ class MainWindow(BaseTk):
         self.preview.set_wm_preview_config(wm_cfg)
 
         # 🔹 이 게시물의 앵커 사용
-        anchor = tuple(meta.get("anchor") or self.app_settings.post_anchors.get(key, settings.wm_anchor))
+        anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)  # ✅ 세션 > 기본
         self._wm_anchor = anchor
 
         try:
@@ -203,13 +199,8 @@ class MainWindow(BaseTk):
     # 종료 시에도 보수적으로 저장(최근 폴더 포함)
     def _on_close(self):
         try:
-            self._on_options_changed()  # 한 번 더 동기화/저장
-            # 게시물별 앵커 반영
-            self.app_settings.wm_anchor = tuple(self._wm_anchor)
-            self.app_settings.post_anchors.update({
-                k: tuple(m.get("anchor")) for k, m in self.posts.items() if m.get("anchor")
-            })
-            self.app_settings.save()
+            self._on_options_changed()  # UI 옵션만 저장
+            # ✅ 앵커는 저장하지 않음 (세션 한정)
         except Exception:
             pass
         self.destroy()
