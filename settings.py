@@ -25,7 +25,7 @@ class AppSettings:
     sizes: List[Tuple[int, int]] = None
     bg_color: Tuple[int, int, int] = DEFAULT_BG
     wm_opacity: int = 30
-    wm_scale_pct: int = 20
+    wm_scale_pct: int = 20  # ← 의도적으로 크게 사용 중이면 OK
     default_wm_text: str = DEFAULT_WM_TEXT
 
     wm_fill_color: Tuple[int, int, int] = DEFAULT_WM_FILL
@@ -35,10 +35,10 @@ class AppSettings:
     wm_anchor: Tuple[float, float] = (0.5, 0.5)
     wm_font_path: Optional[Path] = None
 
-    # 게시물별 앵커
+    # 게시물별 앵커(세션 전용 메모리)
     post_anchors: Dict[str, Tuple[float, float]] = field(default_factory=dict)
 
-    # 🔹 다이얼로그 초기 폴더 기억(출력/폰트 각각)
+    # 파일 다이얼로그 최근 폴더 기억(출력/폰트 각각)
     last_dir_output_dialog: Optional[Path] = None
     last_dir_font_dialog: Optional[Path] = None
 
@@ -51,7 +51,7 @@ class AppSettings:
         def p(v): return str(v) if isinstance(v, Path) else v
         return {
             "output_root": p(self.output_root),
-            "sizes": self.sizes,
+            "sizes": self.sizes,  # (0,0) 센티널도 그대로 저장
             "bg_color": list(self.bg_color),
             "wm_opacity": self.wm_opacity,
             "wm_scale_pct": self.wm_scale_pct,
@@ -61,7 +61,6 @@ class AppSettings:
             "wm_stroke_width": self.wm_stroke_width,
             "wm_anchor": list(self.wm_anchor),
             "wm_font_path": p(self.wm_font_path) if self.wm_font_path else "",
-            "post_anchors": {k: list(v) for k, v in self.post_anchors.items()},
             "last_dir_output_dialog": p(self.last_dir_output_dialog) if self.last_dir_output_dialog else "",
             "last_dir_font_dialog": p(self.last_dir_font_dialog) if self.last_dir_font_dialog else "",
         }
@@ -69,11 +68,17 @@ class AppSettings:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "AppSettings":
         def tup3(x, dflt):
-            try: t = tuple(int(v) for v in x); return (t + dflt)[:3]
-            except: return dflt
+            try:
+                t = tuple(int(v) for v in x)
+                return (t + dflt)[:3]
+            except:
+                return dflt
         def tup2f(x, dflt):
-            try: t = tuple(float(v) for v in x); return (t + dflt)[:2]
-            except: return dflt
+            try:
+                t = tuple(float(v) for v in x)
+                return (t + dflt)[:2]
+            except:
+                return dflt
 
         sizes = d.get("sizes") or DEFAULT_SIZES
         return AppSettings(
@@ -88,7 +93,7 @@ class AppSettings:
             wm_stroke_width=int(d.get("wm_stroke_width", DEFAULT_WM_STROKE_W)),
             wm_anchor=tup2f(d.get("wm_anchor", (0.5, 0.5)), (0.5, 0.5)),
             wm_font_path=Path(d["wm_font_path"]) if d.get("wm_font_path") else None,
-            post_anchors={k: tuple(map(float, v)) for k, v in (d.get("post_anchors") or {}).items()},
+            post_anchors=dict(),  # ✅ 항상 빈 dict로 시작(세션 한정)
             last_dir_output_dialog=Path(d["last_dir_output_dialog"]) if d.get("last_dir_output_dialog") else None,
             last_dir_font_dialog=Path(d["last_dir_font_dialog"]) if d.get("last_dir_font_dialog") else None,
         )
@@ -110,7 +115,8 @@ class AppSettings:
 
 def hex_to_rgb(hexstr: str) -> Tuple[int, int, int]:
     hs = hexstr.lstrip("#")
-    if len(hs) == 3: hs = "".join([c*2 for c in hs])
+    if len(hs) == 3:
+        hs = "".join([c*2 for c in hs])
     try:
         return (int(hs[0:2],16), int(hs[2:4],16), int(hs[4:6],16))
     except Exception:
