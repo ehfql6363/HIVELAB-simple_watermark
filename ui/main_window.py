@@ -111,8 +111,6 @@ class MainWindow(BaseTk):
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
 
-        if not out_root_str and roots:
-            messagebox.showinfo("출력 폴더", "출력 폴더가 비어 있습니다. 첫 번째 루트의 export로 저장합니다.")
         default_out = (Path(roots[0].path) / "export") if roots else Path("export")
 
         s = AppSettings(
@@ -125,9 +123,9 @@ class MainWindow(BaseTk):
             wm_fill_color=hex_to_rgb(wm_fill_hex or "#000000"),
             wm_stroke_color=hex_to_rgb(wm_stroke_hex or "#FFFFFF"),
             wm_stroke_width=int(wm_stroke_w),
-            wm_anchor=self._wm_anchor,
+            wm_anchor=self.app_settings.wm_anchor,
             wm_font_path=Path(wm_font_path_str) if wm_font_path_str else None,
-            post_anchors=dict(self.app_settings.post_anchors),  # 🔹 유지
+            # post_anchors는 세션 한정이므로 건들지 않음
         )
         return s
 
@@ -141,10 +139,8 @@ class MainWindow(BaseTk):
         self.post_list.set_posts(self.posts)
 
     def on_select_post(self, key: str | None):
-        # 선택만 바뀌면 자동 미리보기는 하지 않지만,
-        # 선택 게시물의 앵커를 현재 앵커로 유지
         if key and key in self.posts:
-            self._wm_anchor = tuple(self.posts[key].get("anchor") or self.app_settings.post_anchors.get(key, self.app_settings.wm_anchor))
+            self._wm_anchor = tuple(self.posts[key].get("anchor") or self.app_settings.wm_anchor)
 
     def on_preview(self):
         key = self.post_list.get_selected_post()
