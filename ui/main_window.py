@@ -27,8 +27,8 @@ class MainWindow(BaseTk):
         self.geometry("1180x760")
 
         self.controller = controller
-        # 스캔 결과 전체(원본)
         self.posts: Dict[str, dict] = {}
+        self._wm_anchor = (0.5, 0.5)   # 🔹 현재 선택된 워터마크 위치(정규화)
 
         self._build_ui()
 
@@ -38,7 +38,10 @@ class MainWindow(BaseTk):
 
         mid = ttk.PanedWindow(self, orient=tk.HORIZONTAL); mid.pack(fill="both", expand=True, padx=8, pady=6)
         self.post_list = PostList(mid, on_select=self.on_select_post); mid.add(self.post_list, weight=1)
-        self.preview = PreviewPane(mid); mid.add(self.preview, weight=3)
+
+        # PreviewPane에 앵커 변경 콜백 전달
+        self.preview = PreviewPane(mid, on_anchor_change=self._on_anchor_change)
+        mid.add(self.preview, weight=3)
 
         tbar = ttk.Frame(self); tbar.pack(fill="x", padx=8)
         ttk.Button(tbar, text="Scan Posts", command=self.on_scan).pack(side="left")
@@ -48,6 +51,14 @@ class MainWindow(BaseTk):
         self.status.pack(fill="x", padx=8, pady=6)
 
     # -------- Callbacks --------
+    def _on_anchor_change(self, norm_xy):
+        """미리보기에서 위치를 바꾸면 즉시 반영해서 재렌더."""
+        self._wm_anchor = norm_xy
+        # 선택된 게시물 있으면 미리보기 재계산
+        key = self.post_list.get_selected_post()
+        if key and key in self.posts:
+            self.on_preview()
+
     def on_scan(self):
         roots = self.opt.get_roots()
         if not roots:
@@ -76,6 +87,7 @@ class MainWindow(BaseTk):
             wm_fill_color=hex_to_rgb(wm_fill_hex or "#000000"),
             wm_stroke_color=hex_to_rgb(wm_stroke_hex or "#FFFFFF"),
             wm_stroke_width=int(wm_stroke_w),
+            wm_anchor=self._wm_anchor,  # 🔹 위치 전달
         )
 
     def on_preview(self):
@@ -90,7 +102,10 @@ class MainWindow(BaseTk):
             before_img, after_img = self.controller.preview_by_key(key, self.posts, settings)
         except Exception as e:
             messagebox.showerror("Preview Error", str(e)); return
+
         self.preview.show(before_img, after_img)
+        # 마커를 현재 앵커로 표시
+        self.preview.set_anchor(self._wm_anchor)
 
     def on_start_batch(self):
         # 현재 리스트에 남아있는 항목만 처리
