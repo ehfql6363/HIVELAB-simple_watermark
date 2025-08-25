@@ -36,11 +36,15 @@ class MainWindow(BaseTk):
         self._wm_anchor = tuple(self.app_settings.wm_anchor)  # 기본 앵커
         self._active_src: Optional[Path] = None  # 현재 편집 중 이미지(없으면 게시물 앵커 편집)
 
-        # 상단(스크롤) + 하단(고정)
-        self.scroll = ScrollFrame(self)
-        self.scroll.pack(side="top", fill="both", expand=True, padx=8, pady=(6, 0))
-        self._build_scroll_content(self.scroll.inner)
+        # 1) 헤더(옵션+툴바)만 스크롤 가능
+        self.header = ScrollFrame(self, height=300)
+        self.header.pack(side="top", fill="x", padx=8, pady=(6, 0))
+        self._build_header(self.header.inner)
 
+        # 2) 가운데 PanedWindow는 스크롤 밖 (부모: self)
+        self._build_middle(self)
+
+        # 3) 상태바는 그대로
         self.status = StatusBar(self, on_start=self.on_start_batch)
         self.status.pack(side="bottom", fill="x", padx=8, pady=8)
 
@@ -49,74 +53,63 @@ class MainWindow(BaseTk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _build_scroll_content(self, parent):
+    def _build_header(self, parent):
         self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
         self.opt.pack(fill="x", pady=(0, 6))
-
         tbar = ttk.Frame(parent);
         tbar.pack(fill="x", pady=(0, 6))
         ttk.Button(tbar, text="게시물 스캔", command=self.on_scan).pack(side="left")
         ttk.Button(tbar, text="미리보기", command=self.on_preview).pack(side="left", padx=6)
 
+    def _build_middle(self, parent):
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
 
-        # 좌: 게시물 리스트
-        self.post_list = PostList(
-            mid,
-            on_select=self.on_select_post,
-            on_activate=lambda key: self.on_preview(),
-        )
+        # 좌: 리스트 (자체 스크롤)
+        self.post_list = PostList(mid, on_select=self.on_select_post,
+                                  on_activate=lambda key: self.on_preview())
         mid.add(self.post_list, weight=1)
 
-        # ✅ 우: 세로 PanedWindow (미리보기 위 / 썸네일 아래)
-        right = ttk.PanedWindow(mid, orient=tk.VERTICAL)  # ← ttk로 되돌림
+        # 우: 세로 PanedWindow (미리보기/갤러리)
+        right = ttk.PanedWindow(mid, orient=tk.VERTICAL)
         mid.add(right, weight=4)
 
-        # 위: 미리보기
         pre_frame = ttk.Frame(right)
         self.preview = PreviewPane(pre_frame, on_anchor_change=self._on_anchor_change)
         self.preview.pack(fill="both", expand=True)
-        right.add(pre_frame, weight=5)  # ttk는 weight OK
+        right.add(pre_frame, weight=5)
 
-        # 아래: 썸네일 갤러리
         gal_frame = ttk.Frame(right)
+        gal_frame.pack_propagate(False)
         self.gallery = ThumbGallery(gal_frame, on_activate=self._on_activate_image,
                                     thumb_size=168, cols=6, height=240)
         self.gallery.pack(fill="x", expand=False)
-        right.add(gal_frame, weight=1)  # ttk는 weight OK
+        right.add(gal_frame, weight=1)
 
-        # ❌ ttk에는 paneconfigure(minsize=...)가 없음 → sashpos로 최소 높이 강제
-        MIN_PREVIEW = 360
-        MIN_GALLERY = 140
+        # sash 최소 높이(디바운스) 그대로 유지
+        MIN_PREVIEW, MIN_GALLERY = 360, 140
+        self._sash_job = None
 
-        def _enforce_minsize(_=None):
+        def _apply_minsize():
+            self._sash_job = None
             try:
                 total = right.winfo_height()
-                if total <= 0:
-                    return
-                pos = right.sashpos(0)  # 위/아래 경계 위치(px)
-                # 위쪽 최소 높이
-                if pos < MIN_PREVIEW:
-                    right.sashpos(0, MIN_PREVIEW)
-                    return
-                # 아래쪽 최소 높이
+                if total <= 0: return
+                pos = right.sashpos(0)
+                if pos < MIN_PREVIEW: pos = MIN_PREVIEW
                 if (total - pos) < MIN_GALLERY:
-                    right.sashpos(0, max(total - MIN_GALLERY, MIN_PREVIEW))
-            except Exception:
+                    pos = max(total - MIN_GALLERY, MIN_PREVIEW)
+                if pos != right.sashpos(0):
+                    right.sashpos(0, pos)
+            except:
                 pass
 
-        right.bind("<Configure>", _enforce_minsize)
+        def _enforce(_=None):
+            if self._sash_job: self.after_cancel(self._sash_job)
+            self._sash_job = self.after(30, _apply_minsize)
 
-        # 초기 배치에서 적당한 비율로 한번 맞춤 (선택)
-        def _init_sash():
-            try:
-                right.sashpos(0, max(MIN_PREVIEW, int(self.winfo_height() * 0.65)))
-            except Exception:
-                pass
-
-        self.after(0, _init_sash)
-        self.after(100, _init_sash)  # 선택: 한 번 더 보정
+        right.bind("<Configure>", _enforce)
+        self.after(0, _apply_minsize)
 
     # ---- 콜백/로직 ----
     def _on_options_changed(self):
