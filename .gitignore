@@ -57,6 +57,7 @@ htmlcov/
 .ruff_cache/
 .dmypy.json
 .pyright/
+*.spec
 
 # 주피터
 .ipynb_checkpoints/
