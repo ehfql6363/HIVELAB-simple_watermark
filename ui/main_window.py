@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-MainWindow: 전체 UI 조립 (멀티 루트 대응)
+MainWindow: 전체 UI 조립 (멀티 루트 + DnD 지원 베이스)
+- DnD는 선택적 의존성: pip install tkinterdnd2
+  모듈이 없으면 자동으로 일반 Tk로 동작합니다(드래그앤드롭만 비활성).
 """
 from __future__ import annotations
 
@@ -9,6 +11,15 @@ from typing import Dict, List
 from tkinter import ttk, messagebox
 import tkinter as tk
 
+# TkinterDnD가 있으면 그걸로 루트 창을 만들고, 없으면 기본 Tk 사용
+try:
+    from tkinterdnd2 import TkinterDnD  # type: ignore
+    BaseTk = TkinterDnD.Tk
+    DND_AVAILABLE = True
+except Exception:
+    BaseTk = tk.Tk
+    DND_AVAILABLE = False
+
 from settings import AppSettings, DEFAULT_SIZES, hex_to_rgb, DEFAULT_WM_TEXT, RootConfig
 from controller import AppController
 from ui.post_list import PostList
@@ -16,10 +27,10 @@ from ui.preview_pane import PreviewPane
 from ui.options_panel import OptionsPanel
 from ui.status_bar import StatusBar
 
-class MainWindow(tk.Tk):
+class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
         super().__init__()
-        self.title("Post Watermark & Resize (Phase 3 + Multi-Roots)")
+        self.title("Post Watermark & Resize (Phase 3 + Multi-Roots + DnD)")
         self.geometry("1180x760")
 
         self.controller = controller
@@ -41,6 +52,11 @@ class MainWindow(tk.Tk):
 
         self.status = StatusBar(self, on_start=self.on_start_batch)
         self.status.pack(fill="x", padx=8, pady=6)
+
+        # 상태 표시(선택): DnD 가능 여부 안내
+        if not DND_AVAILABLE:
+            tip = ttk.Label(self, text="(Optional) Drag & Drop: pip install tkinterdnd2", foreground="#777")
+            tip.pack(anchor="w", padx=10, pady=(0, 8))
 
     # -------- Callbacks --------
     def on_scan(self):
