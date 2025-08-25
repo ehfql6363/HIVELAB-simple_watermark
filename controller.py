@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Controller: 스캔/미리보기/배치 실행 오케스트레이션
-UI와 services 사이 경계
-"""
 from __future__ import annotations
 
 from pathlib import Path
