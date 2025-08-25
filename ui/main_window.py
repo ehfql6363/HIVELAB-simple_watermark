@@ -98,13 +98,26 @@ class MainWindow(BaseTk):
             messagebox.showinfo("Preview", "No images in this post."); return
 
         settings = self._collect_settings()
+
+        # 유령 워터마크 프리뷰 설정을 먼저 전달 (드래그 중 초경량 미리보기용)
+        meta = self.posts[key]
+        wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
+        wm_cfg = {
+            "text": wm_text,
+            "opacity": settings.wm_opacity,
+            "scale_pct": settings.wm_scale_pct,
+            "fill": settings.wm_fill_color,        # (r,g,b)
+            "stroke": settings.wm_stroke_color,    # (r,g,b)
+            "stroke_w": settings.wm_stroke_width,
+        }
+        self.preview.set_wm_preview_config(wm_cfg)
+
         try:
             before_img, after_img = self.controller.preview_by_key(key, self.posts, settings)
         except Exception as e:
             messagebox.showerror("Preview Error", str(e)); return
 
         self.preview.show(before_img, after_img)
-        # 마커를 현재 앵커로 표시
         self.preview.set_anchor(self._wm_anchor)
 
     def on_start_batch(self):
