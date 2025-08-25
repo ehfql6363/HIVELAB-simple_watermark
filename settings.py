@@ -4,16 +4,21 @@ from typing import List, Tuple
 
 DEFAULT_SIZES = [(1080, 1080), (1080, 1350), (1080, 1920)]
 DEFAULT_BG = (255, 255, 255)
+DEFAULT_WM_TEXT = "© YourBrand"
+
+@dataclass
+class RootConfig:
+    path: Path
+    wm_text: str = DEFAULT_WM_TEXT
 
 @dataclass
 class AppSettings:
-    input_root: Path = Path("")
     output_root: Path = Path("")
     sizes: List[Tuple[int, int]] = None
     bg_color: Tuple[int, int, int] = DEFAULT_BG
-    wm_text: str = "© YourBrand"
     wm_opacity: int = 30
     wm_scale_pct: int = 5
+    default_wm_text: str = DEFAULT_WM_TEXT  # 루트에 비어있으면 이 값으로 대체
 
     def __post_init__(self):
         if self.sizes is None:

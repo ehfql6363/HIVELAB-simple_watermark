@@ -5,33 +5,52 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Callable
 from PIL import Image
 
-from settings import AppSettings
+from settings import AppSettings, RootConfig
 from services.discovery import scan_posts
 from services.image_ops import load_image
 from services.resize import resize_contain
 from services.watermark import add_center_watermark
 from services.writer import save_jpeg
 
+# posts 구조:
+# {
+#   "RootName/PostName": {
+#       "root": RootConfig,
+#       "post_name": str,
+#       "files": [Path, ...]
+#   },
+#   ...
+# }
+
 class AppController:
     def __init__(self):
         self._processed = 0
 
-    # -------- Scan --------
-    def scan_posts(self, input_root: Path) -> Dict[str, List[Path]]:
-        return scan_posts(input_root)
+    # -------- Scan (multi roots) --------
+    def scan_posts_multi(self, roots: List[RootConfig]) -> Dict[str, dict]:
+        posts: Dict[str, dict] = {}
+        for rc in roots:
+            root = rc.path
+            sub = scan_posts(root)
+            for post_name, files in sub.items():
+                key = f"{root.name}/{post_name}"
+                posts[key] = {"root": rc, "post_name": post_name, "files": files}
+        return posts
 
     # -------- Preview --------
-    def preview_first_of_post(
-        self, post_name: str, posts: Dict[str, List[Path]], settings: AppSettings
+    def preview_by_key(
+        self, key: str, posts: Dict[str, dict], settings: AppSettings
     ) -> tuple[Image.Image, Image.Image]:
-        files = posts.get(post_name, [])
-        if not files:
+        meta = posts.get(key)
+        if not meta or not meta["files"]:
             raise ValueError("No images in this post.")
-        src = files[0]
+        src = meta["files"][0]
         before = load_image(src).convert("RGB")
+
         canvas = resize_contain(before, settings.sizes[0], settings.bg_color)
+        wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
         after = add_center_watermark(
-            canvas, text=settings.wm_text,
+            canvas, text=wm_text,
             opacity_pct=settings.wm_opacity, scale_pct=settings.wm_scale_pct
         )
         return before, after
@@ -40,22 +59,25 @@ class AppController:
     def start_batch(
         self,
         settings: AppSettings,
-        posts: Dict[str, List[Path]],
+        posts: Dict[str, dict],
         progress_cb: Callable[[int], None],
         done_cb: Callable[[int], None],
         error_cb: Callable[[str], None] | None = None,
     ):
         import threading
-        total = sum(len(v) for v in posts.values()) * len(settings.sizes)
+        total = sum(len(meta["files"]) for meta in posts.values()) * len(settings.sizes)
         self._processed = 0
 
         def worker():
             try:
-                for post, files in posts.items():
-                    for src in files:
+                for key, meta in posts.items():
+                    post = meta["post_name"]
+                    rc: RootConfig = meta["root"]
+                    wm_text = (rc.wm_text or "").strip() or settings.default_wm_text
+                    for src in meta["files"]:
                         for (w, h) in settings.sizes:
                             try:
-                                img = self._process_image(src, (w, h), settings)
+                                img = self._process_image(src, (w, h), settings, wm_text)
                                 dst = settings.output_root / post / f"{w}x{h}" / (src.stem + "_wm.jpg")
                                 save_jpeg(img, dst)
                             except Exception as e:
@@ -70,11 +92,11 @@ class AppController:
         threading.Thread(target=worker, daemon=True).start()
 
     # -------- Internal --------
-    def _process_image(self, src: Path, target: Tuple[int, int], settings: AppSettings) -> Image.Image:
+    def _process_image(self, src: Path, target: Tuple[int, int], settings: AppSettings, wm_text: str) -> Image.Image:
         im = load_image(src)
         canvas = resize_contain(im, target, settings.bg_color)
         out = add_center_watermark(
-            canvas, text=settings.wm_text,
+            canvas, text=wm_text,
             opacity_pct=settings.wm_opacity, scale_pct=settings.wm_scale_pct
         )
         return out

@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
+"""
+MainWindow: 전체 UI 조립 (멀티 루트 대응)
+"""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
-import tkinter as tk
+from typing import Dict, List
 from tkinter import ttk, messagebox
+import tkinter as tk
 
-from PIL import Image, ImageTk
-
-from settings import AppSettings, DEFAULT_SIZES, hex_to_rgb
+from settings import AppSettings, DEFAULT_SIZES, hex_to_rgb, DEFAULT_WM_TEXT, RootConfig
 from controller import AppController
 from ui.post_list import PostList
 from ui.preview_pane import PreviewPane
@@ -18,70 +19,68 @@ from ui.status_bar import StatusBar
 class MainWindow(tk.Tk):
     def __init__(self, controller: AppController):
         super().__init__()
-        self.title("Post Watermark & Resize (Phase 3)")
-        self.geometry("1120x720")
+        self.title("Post Watermark & Resize (Phase 3 + Multi-Roots)")
+        self.geometry("1180x760")
 
         self.controller = controller
-        self.posts: Dict[str, List[Path]] = {}
+        self.posts: Dict[str, dict] = {}
 
         self._build_ui()
 
-    # ---------- UI Build ----------
     def _build_ui(self):
-        # top: options panel
         self.opt = OptionsPanel(self)
         self.opt.pack(fill="x", padx=8, pady=6)
 
-        # middle: split (post list | preview)
         mid = ttk.PanedWindow(self, orient=tk.HORIZONTAL); mid.pack(fill="both", expand=True, padx=8, pady=6)
         self.post_list = PostList(mid, on_select=self.on_select_post); mid.add(self.post_list, weight=1)
         self.preview = PreviewPane(mid); mid.add(self.preview, weight=3)
 
-        # toolbar (scan/preview)
         tbar = ttk.Frame(self); tbar.pack(fill="x", padx=8)
         ttk.Button(tbar, text="Scan Posts", command=self.on_scan).pack(side="left")
         ttk.Button(tbar, text="Preview Selected", command=self.on_preview).pack(side="left", padx=6)
 
-        # status bar (progress + start)
         self.status = StatusBar(self, on_start=self.on_start_batch)
         self.status.pack(fill="x", padx=8, pady=6)
 
-    # ---------- Callbacks ----------
+    # -------- Callbacks --------
     def on_scan(self):
-        in_root = self.opt.get_input_root()
-        if not in_root:
-            messagebox.showerror("Error", "Select Input Root."); return
-        root = Path(in_root)
-        if not root.exists():
-            messagebox.showerror("Error", "Input root does not exist."); return
-        self.posts = self.controller.scan_posts(root)
+        roots = self.opt.get_roots()
+        if not roots:
+            messagebox.showerror("Error", "Add at least one Input Root."); return
+        self.posts = self.controller.scan_posts_multi(roots)
         self.post_list.set_posts(self.posts)
 
     def on_select_post(self, _name: str | None):
         self.preview.clear()
 
-    def collect_settings(self) -> AppSettings:
-        sizes, bg_hex, wm_text, wm_opacity, wm_scale, in_root, out_root = self.opt.collect_options()
-        bg = hex_to_rgb(bg_hex or "#FFFFFF")
-        return AppSettings(
-            input_root=Path(in_root) if in_root else Path(""),
-            output_root=Path(out_root) if out_root else (Path(in_root) / "export" if in_root else Path("export")),
+    def _collect_settings(self) -> AppSettings:
+        sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots = self.opt.collect_options()
+        if not out_root_str:
+            messagebox.showinfo("Output", "Output Root is empty. It will be created as <first_root>/export.")
+        if roots:
+            default_out = Path(roots[0].path) / "export"
+        else:
+            default_out = Path("export")
+        settings = AppSettings(
+            output_root=Path(out_root_str) if out_root_str else default_out,
             sizes=sizes if sizes else list(DEFAULT_SIZES),
-            bg_color=bg,
-            wm_text=wm_text,
+            bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
             wm_opacity=int(wm_opacity),
             wm_scale_pct=int(wm_scale),
+            default_wm_text=DEFAULT_WM_TEXT,
         )
+        return settings
 
     def on_preview(self):
-        name = self.post_list.get_selected_post()
-        if not name:
+        key = self.post_list.get_selected_post()
+        if not key:
             messagebox.showinfo("Preview", "Select a post from the list."); return
-        if not self.posts.get(name):
+        if key not in self.posts or not self.posts[key]["files"]:
             messagebox.showinfo("Preview", "No images in this post."); return
-        settings = self.collect_settings()
+
+        settings = self._collect_settings()
         try:
-            before_img, after_img = self.controller.preview_first_of_post(name, self.posts, settings)
+            before_img, after_img = self.controller.preview_by_key(key, self.posts, settings)
         except Exception as e:
             messagebox.showerror("Preview Error", str(e)); return
         self.preview.show(before_img, after_img)
@@ -89,8 +88,8 @@ class MainWindow(tk.Tk):
     def on_start_batch(self):
         if not self.posts:
             messagebox.showinfo("Run", "No posts found. Click 'Scan Posts' first."); return
-        settings = self.collect_settings()
-        total = sum(len(v) for v in self.posts.values()) * len(settings.sizes)
+        settings = self._collect_settings()
+        total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
         if total == 0:
             messagebox.showinfo("Run", "Nothing to process."); return
 
@@ -98,11 +97,9 @@ class MainWindow(tk.Tk):
 
         def on_progress(val: int):
             self.status.set_progress(val)
-
         def on_done(processed: int):
             messagebox.showinfo("Done", f"Finished. Processed {processed} items.")
             self.status.finish()
-
         def on_error(msg: str):
             messagebox.showerror("Run Error", msg)
 
