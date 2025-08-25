@@ -1,179 +1,38 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from typing import Dict, List, Tuple
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk
 
-from PIL import Image, ImageOps, ImageDraw, ImageFont, ImageTk
+from settings import AppSettings, DEFAULT_SIZES, DEFAULT_BG, hex_to_rgb
+from services.discovery import scan_posts
+from services.image_ops import load_image
+from services.resize import resize_contain
+from services.watermark import add_center_watermark
+from services.writer import save_jpeg
 
-# --------------------------- Config Defaults ---------------------------
 
-DEFAULT_SIZES = [(1080, 1080), (1080, 1350), (1080, 1920)]
-DEFAULT_BG = (255, 255, 255)  # white
-DEFAULT_WM_TEXT = "© YourBrand"
-DEFAULT_WM_OPACITY = 30  # 0..100
-DEFAULT_WM_SCALE_PCT = 5  # % of short side
-DEFAULT_FONT_CANDIDATES = [
-    # Common Windows fonts first
-    "arial.ttf", "tahoma.ttf", "segoeui.ttf",
-    # DejaVu as a common fallback on many systems
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-]
-SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-
-# --------------------------- Data Model ---------------------------
-
-@dataclass
-class AppSettings:
-    input_root: Path = Path("")
-    output_root: Path = Path("")
-    sizes: List[Tuple[int, int]] = None
-    bg_color: Tuple[int, int, int] = DEFAULT_BG
-    wm_text: str = DEFAULT_WM_TEXT
-    wm_opacity: int = DEFAULT_WM_OPACITY
-    wm_scale_pct: int = DEFAULT_WM_SCALE_PCT
-
-    def __post_init__(self):
-        if self.sizes is None:
-            self.sizes = list(DEFAULT_SIZES)
-
-# --------------------------- Helpers & Image Ops ---------------------------
-
-def exif_transpose(image: Image.Image) -> Image.Image:
-    try:
-        return ImageOps.exif_transpose(image)
-    except Exception:
-        return image
-
-def load_image(path: Path) -> Image.Image:
-    im = Image.open(str(path))
-    im = exif_transpose(im)
-    if im.mode not in ("RGB", "RGBA"):
-        im = im.convert("RGBA" if im.mode == "LA" else "RGB")
-    return im
-
-def resize_contain(img: Image.Image, target: Tuple[int, int], bg: Tuple[int, int, int]) -> Image.Image:
-    """Contain resize: keep aspect, add padding to fill target canvas."""
-    Wt, Ht = target
-    Ws, Hs = img.size
-    scale = min(Wt / Ws, Ht / Hs)
-    newW, newH = max(1, int(Ws * scale)), max(1, int(Hs * scale))
-    img_resized = img.resize((newW, newH), Image.Resampling.LANCZOS)
-
-    canvas = Image.new("RGB", (Wt, Ht), bg)
-    ox = (Wt - newW) // 2
-    oy = (Ht - newH) // 2
-    if img_resized.mode == "RGBA":
-        canvas.paste(img_resized, (ox, oy), img_resized)
-    else:
-        canvas.paste(img_resized, (ox, oy))
-    return canvas
-
-def pick_font(size: int) -> ImageFont.ImageFont:
-    for cand in DEFAULT_FONT_CANDIDATES:
-        try:
-            return ImageFont.truetype(cand, size=size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
-
-def measure_text(font: ImageFont.FreeTypeFont, text: str, stroke_width: int = 0) -> Tuple[int, int]:
-    dummy_img = Image.new("RGB", (10, 10))
-    d = ImageDraw.Draw(dummy_img)
-    bbox = d.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
-    w = bbox[2] - bbox[0]
-    h = bbox[3] - bbox[1]
-    return w, h
-
-def find_font_size_for_width(text: str, target_width: int, low: int = 8, high: int = 512, stroke_width: int = 2) -> int:
-    """Binary search a font size whose rendered width is <= target_width (maximal)."""
-    best = low
-    while low <= high:
-        mid = (low + high) // 2
-        font = pick_font(mid)
-        w, _ = measure_text(font, text, stroke_width=stroke_width)
-        if w <= target_width:
-            best = mid
-            low = mid + 1
-        else:
-            high = mid - 1
-    return best
-
-def add_center_watermark(img: Image.Image, text: str, opacity_pct: int, scale_pct: int) -> Image.Image:
-    if not text:
-        return img
-
-    W, H = img.size
-    short_side = min(W, H)
-    target_w = max(1, int(short_side * (scale_pct / 100.0)))
-
-    stroke_width = 2
-    font_size = find_font_size_for_width(text, target_w, stroke_width=stroke_width)
-    font = pick_font(font_size)
-
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(overlay)
-    tw, th = measure_text(font, text, stroke_width=stroke_width)
-    x = (W - tw) // 2
-    y = (H - th) // 2
-
-    alpha = int(255 * (opacity_pct / 100.0))
-    d.text(
-        (x, y),
-        text,
-        font=font,
-        fill=(0, 0, 0, alpha),  # black fill
-        stroke_width=stroke_width,
-        stroke_fill=(255, 255, 255, alpha),  # white stroke for contrast
-    )
-
-    base = img.convert("RGBA")
-    out = Image.alpha_composite(base, overlay)
-    return out.convert("RGB")
-
-def process_image(src: Path, target: Tuple[int, int], settings: AppSettings) -> Image.Image:
+def process_image(src: Path, target: Tuple[int, int], settings: AppSettings):
+    """Pipeline: load -> contain -> center watermark."""
     im = load_image(src)
     canvas = resize_contain(im, target, settings.bg_color)
-    out = add_center_watermark(canvas, settings.wm_text, settings.wm_opacity, settings.wm_scale_pct)
+    out = add_center_watermark(
+        canvas,
+        text=settings.wm_text,
+        opacity_pct=settings.wm_opacity,
+        scale_pct=settings.wm_scale_pct,
+    )
     return out
 
-def save_jpeg(img: Image.Image, dst: Path, quality: int = 92) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    img.save(str(dst), format="JPEG", quality=quality, subsampling=1, optimize=True)
-
-# --------------------------- Scanning ---------------------------
-
-def is_image(p: Path) -> bool:
-    return p.is_file() and p.suffix.lower() in SUPPORTED_EXTS
-
-def numeric_key(p: Path):
-    # Prefer numeric stem ordering if possible (1,2,10)
-    try:
-        return (0, int(p.stem))
-    except Exception:
-        return (1, p.name.lower())
-
-def scan_posts(input_root: Path) -> Dict[str, List[Path]]:
-    posts: Dict[str, List[Path]] = {}
-    if not input_root or not input_root.exists():
-        return posts
-    for child in sorted(input_root.iterdir(), key=lambda p: p.name.lower()):
-        if child.is_dir():
-            imgs = [p for p in sorted(child.iterdir(), key=numeric_key) if is_image(p)]
-            if imgs:
-                posts[child.name] = imgs
-    return posts
-
-# --------------------------- GUI ---------------------------
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Post Watermark & Resize (MVP)")
+        self.title("Post Watermark & Resize (Phase 1)")
         self.geometry("1100x680")
 
         self.settings = AppSettings()
@@ -307,7 +166,7 @@ class App(tk.Tk):
     def collect_settings(self) -> AppSettings:
         sizes = [s for s, var in self.size_vars.items() if var.get()] or list(DEFAULT_SIZES)
         bg_hex = self.var_bg.get().strip() or "#FFFFFF"
-        bg = self.hex_to_rgb(bg_hex)
+        bg = hex_to_rgb(bg_hex)
         in_root = Path(self.var_input.get().strip())
         out_root = Path(self.var_output.get().strip()) if self.var_output.get().strip() else in_root / "export"
         return AppSettings(
@@ -319,19 +178,6 @@ class App(tk.Tk):
             wm_opacity=int(self.var_wm_opacity.get()),
             wm_scale_pct=int(self.var_wm_scale.get()),
         )
-
-    @staticmethod
-    def hex_to_rgb(hexstr: str) -> Tuple[int, int, int]:
-        hs = hexstr.lstrip("#")
-        if len(hs) == 3:
-            hs = "".join([c*2 for c in hs])
-        try:
-            r = int(hs[0:2], 16)
-            g = int(hs[2:4], 16)
-            b = int(hs[4:6], 16)
-            return (r, g, b)
-        except Exception:
-            return DEFAULT_BG
 
     def on_preview(self):
         sel = self.lb_posts.curselection()
@@ -400,7 +246,6 @@ class App(tk.Tk):
         except Exception as e:
             self.progress.after(0, lambda: messagebox.showerror("Run Error", str(e)))
 
-# --------------------------- Main ---------------------------
 
 if __name__ == "__main__":
     app = App()
