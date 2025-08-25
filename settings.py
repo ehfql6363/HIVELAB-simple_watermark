@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 import json
@@ -12,7 +12,6 @@ DEFAULT_WM_FILL = (0, 0, 0)
 DEFAULT_WM_STROKE = (255, 255, 255)
 DEFAULT_WM_STROKE_W = 2
 
-# 사용자 설정 저장 위치 (~/.post_wm_tool.json)
 CONFIG_PATH = Path.home() / ".post_wm_tool.json"
 
 @dataclass
@@ -34,18 +33,20 @@ class AppSettings:
     wm_stroke_width: int = DEFAULT_WM_STROKE_W
 
     wm_anchor: Tuple[float, float] = (0.5, 0.5)
-
-    # 선택 폰트 파일 경로
     wm_font_path: Optional[Path] = None
 
-    # 🔹 게시물별 워터마크 위치 (키: "rootname/postname" → (nx, ny))
+    # 게시물별 앵커
     post_anchors: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+
+    # 🔹 다이얼로그 초기 폴더 기억(출력/폰트 각각)
+    last_dir_output_dialog: Optional[Path] = None
+    last_dir_font_dialog: Optional[Path] = None
 
     def __post_init__(self):
         if self.sizes is None:
             self.sizes = list(DEFAULT_SIZES)
 
-    # ----- 직렬화 -----
+    # -------- serialize --------
     def to_dict(self) -> Dict[str, Any]:
         def p(v): return str(v) if isinstance(v, Path) else v
         return {
@@ -61,23 +62,21 @@ class AppSettings:
             "wm_anchor": list(self.wm_anchor),
             "wm_font_path": p(self.wm_font_path) if self.wm_font_path else "",
             "post_anchors": {k: list(v) for k, v in self.post_anchors.items()},
+            "last_dir_output_dialog": p(self.last_dir_output_dialog) if self.last_dir_output_dialog else "",
+            "last_dir_font_dialog": p(self.last_dir_font_dialog) if self.last_dir_font_dialog else "",
         }
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "AppSettings":
         def tup3(x, dflt):
-            try:
-                t = tuple(int(v) for v in x);
-                return (t + dflt)[:3]
+            try: t = tuple(int(v) for v in x); return (t + dflt)[:3]
             except: return dflt
         def tup2f(x, dflt):
-            try:
-                t = tuple(float(v) for v in x)
-                return (t + dflt)[:2]
+            try: t = tuple(float(v) for v in x); return (t + dflt)[:2]
             except: return dflt
 
         sizes = d.get("sizes") or DEFAULT_SIZES
-        out = AppSettings(
+        return AppSettings(
             output_root=Path(d.get("output_root", "")) if d.get("output_root") else Path(""),
             sizes=[tuple(map(int, s)) for s in sizes],
             bg_color=tup3(d.get("bg_color", DEFAULT_BG), DEFAULT_BG),
@@ -90,10 +89,11 @@ class AppSettings:
             wm_anchor=tup2f(d.get("wm_anchor", (0.5, 0.5)), (0.5, 0.5)),
             wm_font_path=Path(d["wm_font_path"]) if d.get("wm_font_path") else None,
             post_anchors={k: tuple(map(float, v)) for k, v in (d.get("post_anchors") or {}).items()},
+            last_dir_output_dialog=Path(d["last_dir_output_dialog"]) if d.get("last_dir_output_dialog") else None,
+            last_dir_font_dialog=Path(d["last_dir_font_dialog"]) if d.get("last_dir_font_dialog") else None,
         )
-        return out
 
-    # ----- 파일 IO -----
+    # -------- file IO --------
     def save(self, path: Path | None = None):
         path = path or CONFIG_PATH
         path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -104,17 +104,14 @@ class AppSettings:
         if not path.exists():
             return AppSettings()
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return AppSettings.from_dict(data)
+            return AppSettings.from_dict(json.loads(path.read_text(encoding="utf-8")))
         except Exception:
-            # 손상/불일치 시 기본값
             return AppSettings()
 
-# color helpers
 def hex_to_rgb(hexstr: str) -> Tuple[int, int, int]:
     hs = hexstr.lstrip("#")
-    if len(hs) == 3: hs = "".join([c * 2 for c in hs])
+    if len(hs) == 3: hs = "".join([c*2 for c in hs])
     try:
-        return (int(hs[0:2], 16), int(hs[2:4], 16), int(hs[4:6], 16))
+        return (int(hs[0:2],16), int(hs[2:4],16), int(hs[4:6],16))
     except Exception:
         return DEFAULT_BG
