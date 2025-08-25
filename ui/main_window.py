@@ -71,7 +71,7 @@ class MainWindow(BaseTk):
 
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
-         wm_fill_hex, wm_stroke_hex, wm_stroke_w) = self.opt.collect_options()
+         wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
 
         if not out_root_str and roots:
             messagebox.showinfo("Output", "Output Root is empty. It will be created as <first_root>/export.")
@@ -87,35 +87,40 @@ class MainWindow(BaseTk):
             wm_fill_color=hex_to_rgb(wm_fill_hex or "#000000"),
             wm_stroke_color=hex_to_rgb(wm_stroke_hex or "#FFFFFF"),
             wm_stroke_width=int(wm_stroke_w),
-            wm_anchor=self._wm_anchor,  # 🔹 위치 전달
+            wm_anchor=self._wm_anchor,
+            wm_font_path=Path(wm_font_path_str) if wm_font_path_str else None,  # 🔹 폰트 전달
         )
 
     def on_preview(self):
         key = self.post_list.get_selected_post()
         if not key:
-            messagebox.showinfo("Preview", "Select a post from the list."); return
+            messagebox.showinfo("Preview", "Select a post from the list.");
+            return
         if key not in self.posts or not self.posts[key]["files"]:
-            messagebox.showinfo("Preview", "No images in this post."); return
+            messagebox.showinfo("Preview", "No images in this post.");
+            return
 
         settings = self._collect_settings()
 
-        # 유령 워터마크 프리뷰 설정을 먼저 전달 (드래그 중 초경량 미리보기용)
+        # 유령 워터마크 프리뷰 설정 전달 (선택 폰트 포함)
         meta = self.posts[key]
         wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
         wm_cfg = {
             "text": wm_text,
             "opacity": settings.wm_opacity,
             "scale_pct": settings.wm_scale_pct,
-            "fill": settings.wm_fill_color,        # (r,g,b)
-            "stroke": settings.wm_stroke_color,    # (r,g,b)
+            "fill": settings.wm_fill_color,
+            "stroke": settings.wm_stroke_color,
             "stroke_w": settings.wm_stroke_width,
+            "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
         }
         self.preview.set_wm_preview_config(wm_cfg)
 
         try:
             before_img, after_img = self.controller.preview_by_key(key, self.posts, settings)
         except Exception as e:
-            messagebox.showerror("Preview Error", str(e)); return
+            messagebox.showerror("Preview Error", str(e));
+            return
 
         self.preview.show(before_img, after_img)
         self.preview.set_anchor(self._wm_anchor)
