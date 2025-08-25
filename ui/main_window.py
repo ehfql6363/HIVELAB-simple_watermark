@@ -29,11 +29,11 @@ class MainWindow(BaseTk):
         self.controller = controller
         self.posts: Dict[str, dict] = {}
 
-        # 🔹 설정 로드
+        # 설정 로드
         self.app_settings = AppSettings.load()
-        self._wm_anchor = tuple(self.app_settings.wm_anchor)  # 기본 앵커
+        self._wm_anchor = tuple(self.app_settings.wm_anchor)
 
-        # 상단(스크롤) + 하단(고정)
+        # 레이아웃
         self.scroll = ScrollFrame(self)
         self.scroll.pack(side="top", fill="both", expand=True, padx=8, pady=(6, 0))
         self._build_scroll_content(self.scroll.inner)
@@ -41,14 +41,14 @@ class MainWindow(BaseTk):
         self.status = StatusBar(self, on_start=self.on_start_batch)
         self.status.pack(side="bottom", fill="x", padx=8, pady=8)
 
-        # 🔹 UI에 초기값 반영
+        # UI 초기값 주입
         self.opt.set_initial_options(self.app_settings)
 
-        # 🔹 종료 시 저장
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_scroll_content(self, parent):
-        self.opt = OptionsPanel(parent)
+        # (A) on_change 콜백 연결
+        self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
         self.opt.pack(fill="x", pady=(0, 6))
 
         tbar = ttk.Frame(parent); tbar.pack(fill="x", pady=(0, 6))
@@ -57,12 +57,35 @@ class MainWindow(BaseTk):
 
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
+        self.post_list = PostList(mid, on_select=self.on_select_post); mid.add(self.post_list, weight=1)
+        self.preview = PreviewPane(mid, on_anchor_change=self._on_anchor_change); mid.add(self.preview, weight=3)
 
-        self.post_list = PostList(mid, on_select=self.on_select_post)
-        mid.add(self.post_list, weight=1)
+    def _on_options_changed(self):
+        # UI → settings 동기화
+        (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
+         wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
 
-        self.preview = PreviewPane(mid, on_anchor_change=self._on_anchor_change)
-        mid.add(self.preview, weight=3)
+        # 최근 폴더도 반영
+        recent_out, recent_font = self.opt.get_recent_dirs()
+
+        s = self.app_settings
+        from settings import hex_to_rgb, DEFAULT_SIZES
+        s.output_root = Path(out_root_str) if out_root_str else s.output_root
+        s.sizes = sizes if sizes else list(DEFAULT_SIZES)
+        s.bg_color = hex_to_rgb(bg_hex or "#FFFFFF")
+        s.wm_opacity = int(wm_opacity)
+        s.wm_scale_pct = int(wm_scale)
+        s.wm_fill_color = hex_to_rgb(wm_fill_hex or "#000000")
+        s.wm_stroke_color = hex_to_rgb(wm_stroke_hex or "#FFFFFF")
+        s.wm_stroke_width = int(wm_stroke_w)
+        s.wm_font_path = Path(wm_font_path_str) if wm_font_path_str else None
+        if recent_out: s.last_dir_output_dialog = recent_out
+        if recent_font: s.last_dir_font_dialog = recent_font
+
+        try:
+            s.save()  # 🔸 즉시 저장
+        except Exception:
+            pass
 
     # ---- 콜백/로직 ----
     def _on_anchor_change(self, norm_xy):
@@ -177,14 +200,16 @@ class MainWindow(BaseTk):
 
         self.controller.start_batch(settings, self.posts, on_prog, on_done, on_err)
 
-    # ----- 종료 시 설정 저장 -----
+    # 종료 시에도 보수적으로 저장(최근 폴더 포함)
     def _on_close(self):
         try:
-            s = self._collect_settings()
-            # 최신 앵커/게시물 앵커 반영(보수적으로 한 번 더)
-            s.wm_anchor = tuple(self._wm_anchor)
-            s.post_anchors.update({k: tuple(m.get("anchor")) for k, m in self.posts.items() if m.get("anchor")})
-            s.save()
+            self._on_options_changed()  # 한 번 더 동기화/저장
+            # 게시물별 앵커 반영
+            self.app_settings.wm_anchor = tuple(self._wm_anchor)
+            self.app_settings.post_anchors.update({
+                k: tuple(m.get("anchor")) for k, m in self.posts.items() if m.get("anchor")
+            })
+            self.app_settings.save()
         except Exception:
             pass
         self.destroy()
