@@ -1,0 +1,82 @@
+# ----------------------------
+# OS / 에디터 잡파일
+# ----------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+*.swp
+*.swo
+
+# VSCode / IntelliJ 등
+.vscode/
+.idea/
+*.code-workspace
+
+# ----------------------------
+# Python 기본
+# ----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+__pypackages__/         # PEP 582
+
+# 가상환경
+.venv/
+venv/
+env/
+ENV/
+.python-version         # pyenv
+
+# ----------------------------
+# 빌드/배포 산출물
+# ----------------------------
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+wheels/
+*.manifest
+*.spec                  # PyInstaller spec
+
+# ----------------------------
+# 테스트/툴 캐시
+# ----------------------------
+.cache/
+.tox/
+.nox/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+.dmypy.json
+.pyright/
+
+# 주피터
+.ipynb_checkpoints/
+
+# ----------------------------
+# 로그/임시/환경 변수
+# ----------------------------
+logs/
+*.log
+tmp/
+.temp/
+.env
+.env.*
+.envrc
+
+# ----------------------------
+# 프로젝트 특화
+# ----------------------------
+export/                 # 출력물(리사이즈/워터마크 결과)
+
+# 폰트 자산을 레포에서 제외하려면 활성화:
+# data/fonts/*
+# !data/fonts/.keep      # 디렉토리 유지용 더미파일만 트래킹
