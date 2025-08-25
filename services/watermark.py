@@ -29,7 +29,7 @@ def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2
             high = mid - 1
     return best
 
-def add_center_watermark(
+def add_text_watermark(
     img: Image.Image,
     text: str,
     opacity_pct: int,
@@ -37,8 +37,9 @@ def add_center_watermark(
     fill_rgb=(0, 0, 0),
     stroke_rgb=(255, 255, 255),
     stroke_width: int = 2,
+    anchor_norm=(0.5, 0.5),  # 🔹 (x,y) in 0..1
 ) -> Image.Image:
-    """중앙 워터마크(텍스트) — 색/외곽선/두께 설정 가능."""
+    """텍스트 워터마크를 임의 위치에 배치. anchor_norm은 최종 이미지 기준 정규화 좌표(0..1)."""
     if not text:
         return img
 
@@ -48,7 +49,18 @@ def add_center_watermark(
 
     font = pick_font(_fit_font_by_width(text, target_w, stroke_width=stroke_width))
     tw, th = _measure_text(font, text, stroke_width=stroke_width)
-    x, y = (W - tw) // 2, (H - th) // 2
+
+    # 정규화 앵커 → 픽셀 좌표(텍스트 박스 중심)
+    ax = min(1.0, max(0.0, float(anchor_norm[0])))
+    ay = min(1.0, max(0.0, float(anchor_norm[1])))
+    cx = ax * W
+    cy = ay * H
+    x = int(round(cx - tw / 2))
+    y = int(round(cy - th / 2))
+
+    # 화면 밖으로 나가지 않게 살짝 클램프
+    x = max(0, min(x, W - tw))
+    y = max(0, min(y, H - th))
 
     alpha = int(255 * (opacity_pct / 100.0))
     fill_rgba = (fill_rgb[0], fill_rgb[1], fill_rgb[2], alpha)
@@ -66,3 +78,8 @@ def add_center_watermark(
     )
     base = img.convert("RGBA")
     return Image.alpha_composite(base, over).convert("RGB")
+
+# 하위호환(중앙 배치)
+def add_center_watermark(*args, **kwargs):
+    kwargs.pop("anchor_norm", None)
+    return add_text_watermark(*args, **kwargs, anchor_norm=(0.5, 0.5))
