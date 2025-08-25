@@ -9,7 +9,7 @@ from settings import AppSettings, RootConfig
 from services.discovery import scan_posts
 from services.image_ops import load_image
 from services.resize import resize_contain
-from services.watermark import add_center_watermark
+from services.watermark import add_text_watermark
 from services.writer import save_jpeg
 
 class AppController:
@@ -35,7 +35,7 @@ class AppController:
 
         canvas = resize_contain(before, settings.sizes[0], settings.bg_color)
         wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
-        after = add_center_watermark(
+        after = add_text_watermark(
             canvas,
             text=wm_text,
             opacity_pct=settings.wm_opacity,
@@ -43,6 +43,7 @@ class AppController:
             fill_rgb=settings.wm_fill_color,
             stroke_rgb=settings.wm_stroke_color,
             stroke_width=settings.wm_stroke_width,
+            anchor_norm=settings.wm_anchor,  # 🔹 위치 반영
         )
         return before, after
 
@@ -84,7 +85,7 @@ class AppController:
     def _process_image(self, src: Path, target: Tuple[int, int], settings: AppSettings, wm_text: str) -> Image.Image:
         im = load_image(src)
         canvas = resize_contain(im, target, settings.bg_color)
-        out = add_center_watermark(
+        out = add_text_watermark(
             canvas,
             text=wm_text,
             opacity_pct=settings.wm_opacity,
@@ -92,5 +93,6 @@ class AppController:
             fill_rgb=settings.wm_fill_color,
             stroke_rgb=settings.wm_stroke_color,
             stroke_width=settings.wm_stroke_width,
+            anchor_norm=settings.wm_anchor,  # 🔹 위치 반영
         )
         return out
