@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import tkinter as tk
-from tkinter import ttk, messagebox
-from pathlib import Path
-from typing import Dict
 
-from settings import AppSettings, DEFAULT_SIZES, DEFAULT_WM_TEXT, hex_to_rgb
+import tkinter as tk
+from pathlib import Path
+from tkinter import ttk, messagebox
+from typing import Dict, Optional
+
 from controller import AppController
+from settings import AppSettings, DEFAULT_SIZES, DEFAULT_WM_TEXT, hex_to_rgb
 from ui.options_panel import OptionsPanel
-from ui.preview_pane import PreviewPane
 from ui.post_list import PostList
-from ui.status_bar import StatusBar
+from ui.preview_pane import PreviewPane
 from ui.scrollframe import ScrollFrame
+from ui.status_bar import StatusBar
+from ui.thumb_gallery import ThumbGallery
 
 # DnD 지원 루트
 try:
@@ -24,16 +26,17 @@ class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
         super().__init__()
         self.title("게시물 워터마크 & 리사이즈")
-        self.geometry("1180x820")
+        self.geometry("1180x860")
 
         self.controller = controller
         self.posts: Dict[str, dict] = {}
 
-        # 설정 로드
+        # 설정 로드(앵커는 세션 한정이므로 파일에는 post_anchors 저장 안함)
         self.app_settings = AppSettings.load()
-        self._wm_anchor = tuple(self.app_settings.wm_anchor)
+        self._wm_anchor = tuple(self.app_settings.wm_anchor)  # 기본 앵커
+        self._active_src: Optional[Path] = None  # 현재 편집 중 이미지(없으면 게시물 앵커 편집)
 
-        # 레이아웃
+        # 상단(스크롤) + 하단(고정)
         self.scroll = ScrollFrame(self)
         self.scroll.pack(side="top", fill="both", expand=True, padx=8, pady=(6, 0))
         self._build_scroll_content(self.scroll.inner)
@@ -58,7 +61,7 @@ class MainWindow(BaseTk):
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
 
-        # 🔹 더블 클릭 시 미리보기 실행
+        # 좌: 게시물 리스트
         self.post_list = PostList(
             mid,
             on_select=self.on_select_post,
@@ -66,19 +69,63 @@ class MainWindow(BaseTk):
         )
         mid.add(self.post_list, weight=1)
 
-        self.preview = PreviewPane(mid, on_anchor_change=self._on_anchor_change)
-        mid.add(self.preview, weight=3)
+        # ✅ 우: 세로 PanedWindow (미리보기 위 / 썸네일 아래)
+        right = ttk.PanedWindow(mid, orient=tk.VERTICAL)  # ← ttk로 되돌림
+        mid.add(right, weight=4)
 
+        # 위: 미리보기
+        pre_frame = ttk.Frame(right)
+        self.preview = PreviewPane(pre_frame, on_anchor_change=self._on_anchor_change)
+        self.preview.pack(fill="both", expand=True)
+        right.add(pre_frame, weight=5)  # ttk는 weight OK
+
+        # 아래: 썸네일 갤러리
+        gal_frame = ttk.Frame(right)
+        self.gallery = ThumbGallery(gal_frame, on_activate=self._on_activate_image,
+                                    thumb_size=168, cols=6, height=240)
+        self.gallery.pack(fill="x", expand=False)
+        right.add(gal_frame, weight=1)  # ttk는 weight OK
+
+        # ❌ ttk에는 paneconfigure(minsize=...)가 없음 → sashpos로 최소 높이 강제
+        MIN_PREVIEW = 360
+        MIN_GALLERY = 140
+
+        def _enforce_minsize(_=None):
+            try:
+                total = right.winfo_height()
+                if total <= 0:
+                    return
+                pos = right.sashpos(0)  # 위/아래 경계 위치(px)
+                # 위쪽 최소 높이
+                if pos < MIN_PREVIEW:
+                    right.sashpos(0, MIN_PREVIEW)
+                    return
+                # 아래쪽 최소 높이
+                if (total - pos) < MIN_GALLERY:
+                    right.sashpos(0, max(total - MIN_GALLERY, MIN_PREVIEW))
+            except Exception:
+                pass
+
+        right.bind("<Configure>", _enforce_minsize)
+
+        # 초기 배치에서 적당한 비율로 한번 맞춤 (선택)
+        def _init_sash():
+            try:
+                right.sashpos(0, max(MIN_PREVIEW, int(self.winfo_height() * 0.65)))
+            except Exception:
+                pass
+
+        self.after(0, _init_sash)
+        self.after(100, _init_sash)  # 선택: 한 번 더 보정
+
+    # ---- 콜백/로직 ----
     def _on_options_changed(self):
-        # UI → settings 동기화
+        # UI 즉시 저장(출력/사이즈/폰트 등)
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
-
-        # 최근 폴더도 반영
         recent_out, recent_font = self.opt.get_recent_dirs()
 
         s = self.app_settings
-        from settings import hex_to_rgb, DEFAULT_SIZES
         s.output_root = Path(out_root_str) if out_root_str else s.output_root
         s.sizes = sizes if sizes else list(DEFAULT_SIZES)
         s.bg_color = hex_to_rgb(bg_hex or "#FFFFFF")
@@ -90,30 +137,18 @@ class MainWindow(BaseTk):
         s.wm_font_path = Path(wm_font_path_str) if wm_font_path_str else None
         if recent_out: s.last_dir_output_dialog = recent_out
         if recent_font: s.last_dir_font_dialog = recent_font
-
-        try:
-            s.save()  # 🔸 즉시 저장
-        except Exception:
-            pass
-
-    # ---- 콜백/로직 ----
-    def _on_anchor_change(self, norm_xy):
-        key = self.post_list.get_selected_post()
-        if not key or key not in self.posts:
-            return
-        # ✅ 세션 메모리만 갱신
-        self.posts[key]["anchor"] = (float(norm_xy[0]), float(norm_xy[1]))
-        self._wm_anchor = self.posts[key]["anchor"]
-        # 미리보기만 갱신 (디스크 저장/설정 저장 없음)
-        self.on_preview()
+        try: s.save()
+        except Exception: pass
 
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
 
+        if not out_root_str and roots:
+            messagebox.showinfo("출력 폴더", "출력 폴더가 비어 있습니다. 첫 번째 루트의 export로 저장합니다.")
         default_out = (Path(roots[0].path) / "export") if roots else Path("export")
 
-        s = AppSettings(
+        return AppSettings(
             output_root=Path(out_root_str) if out_root_str else default_out,
             sizes=sizes if sizes else list(DEFAULT_SIZES),
             bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
@@ -123,11 +158,9 @@ class MainWindow(BaseTk):
             wm_fill_color=hex_to_rgb(wm_fill_hex or "#000000"),
             wm_stroke_color=hex_to_rgb(wm_stroke_hex or "#FFFFFF"),
             wm_stroke_width=int(wm_stroke_w),
-            wm_anchor=self.app_settings.wm_anchor,
+            wm_anchor=self.app_settings.wm_anchor,  # 기본 앵커(중앙 등)
             wm_font_path=Path(wm_font_path_str) if wm_font_path_str else None,
-            # post_anchors는 세션 한정이므로 건들지 않음
         )
-        return s
 
     def on_scan(self):
         roots = self.opt.get_roots()
@@ -135,12 +168,26 @@ class MainWindow(BaseTk):
             messagebox.showinfo("루트 폴더", "먼저 루트 폴더를 추가하세요.")
             return
         self.posts = self.controller.scan_posts_multi(roots)
-        # ✅ 설정 파일로부터 앵커 주입 없음 (세션 새로 시작)
         self.post_list.set_posts(self.posts)
+        # 새 스캔 → 갤러리/선택 초기화
+        self._active_src = None
+        self.gallery.clear()
 
     def on_select_post(self, key: str | None):
+        # 선택이 바뀌면: 갤러리 구성, 활성 이미지 초기화
+        self._active_src = None
         if key and key in self.posts:
+            files = self.posts[key].get("files", [])
+            self.gallery.set_files(files)
+            self.gallery.set_active(None)
+            # 커서용 앵커는 '이 게시물 앵커 or 기본값'
             self._wm_anchor = tuple(self.posts[key].get("anchor") or self.app_settings.wm_anchor)
+
+    def _on_activate_image(self, path: Path):
+        # 썸네일 더블클릭 → 해당 이미지 편집 모드
+        self._active_src = path
+        self.gallery.set_active(path)
+        self.on_preview()
 
     def on_preview(self):
         key = self.post_list.get_selected_post()
@@ -150,10 +197,10 @@ class MainWindow(BaseTk):
             messagebox.showinfo("미리보기", "이 게시물에는 이미지가 없습니다."); return
 
         settings = self._collect_settings()
-
-        # 유령 워터마크 프리뷰 설정 전달
         meta = self.posts[key]
         wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
+
+        # 유령 워터마크 프리뷰 설정 전달
         wm_cfg = {
             "text": wm_text,
             "opacity": settings.wm_opacity,
@@ -165,17 +212,45 @@ class MainWindow(BaseTk):
         }
         self.preview.set_wm_preview_config(wm_cfg)
 
-        # 🔹 이 게시물의 앵커 사용
-        anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)  # ✅ 세션 > 기본
-        self._wm_anchor = anchor
+        # 이 미리보기에서 사용할 앵커: 이미지 > 게시물 > 기본
+        img_anchor_map = meta.get("img_anchors") or {}
+        if self._active_src and self._active_src in img_anchor_map:
+            anchor = tuple(img_anchor_map[self._active_src])
+        elif meta.get("anchor"):
+            anchor = tuple(meta["anchor"])
+        else:
+            anchor = tuple(self.app_settings.wm_anchor)
+
+        self._wm_anchor = anchor  # 드래그 유령 위치
 
         try:
-            before_img, after_img = self.controller.preview_by_key(key, self.posts, settings)
+            before_img, after_img = self.controller.preview_by_key(
+                key, self.posts, settings, selected_src=self._active_src
+            )
         except Exception as e:
             messagebox.showerror("미리보기 오류", str(e)); return
 
         self.preview.show(before_img, after_img)
         self.preview.set_anchor(anchor)
+
+    def _on_anchor_change(self, norm_xy):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts:
+            return
+
+        # 이미지 편집 모드라면 이미지 앵커로 저장, 아니면 게시물 앵커로 저장
+        meta = self.posts[key]
+        if self._active_src:
+            img_map = meta.get("img_anchors")
+            if img_map is None:
+                img_map = meta["img_anchors"] = {}
+            img_map[self._active_src] = (float(norm_xy[0]), float(norm_xy[1]))
+        else:
+            meta["anchor"] = (float(norm_xy[0]), float(norm_xy[1]))
+
+        self._wm_anchor = (float(norm_xy[0]), float(norm_xy[1]))
+        # 미리보기 갱신
+        self.on_preview()
 
     def on_start_batch(self):
         if not self.posts:
@@ -192,11 +267,10 @@ class MainWindow(BaseTk):
 
         self.controller.start_batch(settings, self.posts, on_prog, on_done, on_err)
 
-    # 종료 시에도 보수적으로 저장(최근 폴더 포함)
     def _on_close(self):
         try:
-            self._on_options_changed()  # UI 옵션만 저장
-            # ✅ 앵커는 저장하지 않음 (세션 한정)
+            self._on_options_changed()  # 옵션 저장
+            # 앵커(게시물/이미지)는 세션 한정 → 저장하지 않음
         except Exception:
             pass
         self.destroy()

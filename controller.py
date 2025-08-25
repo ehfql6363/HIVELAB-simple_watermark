@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, List, Tuple, Callable
+from typing import Dict, List, Tuple, Callable, Optional
 from PIL import Image
 
 from settings import AppSettings, RootConfig
@@ -25,22 +25,38 @@ class AppController:
                 posts[key] = {"root": rc, "post_name": post_name, "files": files}
         return posts
 
-    def preview_by_key(self, key: str, posts: Dict[str, dict], settings: AppSettings):
+    def _choose_anchor(self, meta: dict, settings: AppSettings, src: Optional[Path] = None):
+        # 우선순위: 이미지 앵커 > 게시물 앵커 > 기본 앵커
+        if src is not None:
+            img_map = meta.get("img_anchors") or {}
+            if src in img_map:
+                return img_map[src]
+        if meta.get("anchor"):
+            return meta["anchor"]
+        return settings.wm_anchor
+
+    def preview_by_key(
+        self,
+        key: str,
+        posts: Dict[str, dict],
+        settings: AppSettings,
+        selected_src: Optional[Path] = None
+    ) -> tuple[Image.Image, Image.Image]:
         meta = posts.get(key)
         if not meta or not meta["files"]:
             raise ValueError("No images in this post.")
-        src = meta["files"][0]
+        src = selected_src or meta["files"][0]
         before = load_image(src).convert("RGB")
 
-        # ✅ (0,0) 이면 리사이즈 생략(원본 크기)
         tgt = settings.sizes[0]
-        if tuple(tgt) == (0, 0):
+        if tuple(tgt) == (0, 0):  # 원본 그대로
             canvas = before.copy()
         else:
             canvas = resize_contain(before, tgt, settings.bg_color)
 
         wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
-        anchor = meta.get("anchor") or settings.wm_anchor  # ✅ 세션 내 anchor만 사용
+        anchor = self._choose_anchor(meta, settings, src)
+
         after = add_text_watermark(
             canvas,
             text=wm_text,
@@ -73,19 +89,19 @@ class AppController:
                     post = meta["post_name"]
                     root_label = rc.path.name
                     wm_text = (rc.wm_text or "").strip() or settings.default_wm_text
-                    anchor = meta.get("anchor") or settings.wm_anchor  # ✅ 세션 anchor
 
                     for src in meta["files"]:
                         for (w, h) in settings.sizes:
                             try:
+                                anchor = self._choose_anchor(meta, settings, src)  # 이미지마다 선택
                                 img = self._process_image(src, (w, h), settings, wm_text, anchor)
-                                size_folder = "original" if (w, h) == (0, 0) else f"{w}x{h}"  # ✅ 폴더명
+                                size_folder = "original" if (w, h) == (0, 0) else f"{w}x{h}"
                                 dst = (
-                                        settings.output_root
-                                        / root_label
-                                        / post
-                                        / size_folder
-                                        / f"{src.stem}_wm.jpg"
+                                    settings.output_root
+                                    / root_label
+                                    / post
+                                    / size_folder
+                                    / f"{src.stem}_wm.jpg"
                                 )
                                 save_jpeg(img, dst)
                             except Exception as e:
@@ -99,10 +115,8 @@ class AppController:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _process_image(self, src: Path, target: Tuple[int, int], settings: AppSettings, wm_text: str,
-                       anchor) -> Image.Image:
+    def _process_image(self, src: Path, target: Tuple[int, int], settings: AppSettings, wm_text: str, anchor) -> Image.Image:
         im = load_image(src).convert("RGB")
-        # ✅ (0,0) 이면 리사이즈 생략
         if tuple(target) == (0, 0):
             canvas = im
         else:

@@ -31,15 +31,27 @@ class ScrollFrame(ttk.Frame):
         self.canvas.itemconfigure(self._win_id, width=e.width)
 
     def _bind_mousewheel(self, widget):
-        # Windows / Mac / X11 호환
-        widget.bind_all("<MouseWheel>", lambda e: self._on_wheel(e))
-        widget.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-3, "units"))
-        widget.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(+3, "units"))
+        # hover 시에만 바깥 스크롤이 동작하도록
+        widget.bind("<Enter>", lambda e: self._bind_local_mousewheel())
+        widget.bind("<Leave>", lambda e: self._unbind_local_mousewheel())
 
+    def _bind_local_mousewheel(self):
+        # Windows/macOS
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        # Linux
+        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-3, "units"))
+        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(+3, "units"))
+
+    def _unbind_local_mousewheel(self):
+        self.canvas.unbind("<MouseWheel>")
+        self.canvas.unbind("<Button-4>")
+        self.canvas.unbind("<Button-5>")
+
+    # _on_wheel()의 마지막 줄에 반환값 추가
     def _on_wheel(self, e):
         delta = e.delta
         if delta == 0:
-            return
-        # Windows(+120/-120), macOS(±1~±10) 보정
+            return "break"
         step = -1 * int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
         self.canvas.yview_scroll(step, "units")
+        return "break"  # ✅ 바깥 프레임이 휠을 소비
