@@ -9,7 +9,7 @@ from services.discovery import scan_posts
 from services.image_ops import load_image
 from services.resize import resize_contain
 from services.watermark import add_text_watermark
-from services.writer import save_jpeg
+from services.writer import save_image
 
 class AppController:
     def __init__(self):
@@ -95,15 +95,17 @@ class AppController:
                             try:
                                 anchor = self._choose_anchor(meta, settings, src)  # 이미지마다 선택
                                 img = self._process_image(src, (w, h), settings, wm_text, anchor)
-                                size_folder = "original" if (w, h) == (0, 0) else f"{w}x{h}"
+
+                                # ★ 변경: 사이즈 폴더 제거
+                                # 예전: ... / post / size_folder / f"{src.stem}_wm.jpg"
                                 dst = (
                                     settings.output_root
                                     / root_label
                                     / post
-                                    / size_folder
                                     / f"{src.stem}_wm.jpg"
                                 )
-                                save_jpeg(img, dst)
+
+                                save_image(img, dst)
                             except Exception as e:
                                 if error_cb: error_cb(f"{src} {w}x{h}: {e}")
                             finally:
