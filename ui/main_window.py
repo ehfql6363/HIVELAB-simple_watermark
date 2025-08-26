@@ -124,7 +124,8 @@ class MainWindow(BaseTk):
         self.preview = PreviewPane(
             pre_frame,
             on_anchor_change=self._on_anchor_change,
-            on_apply_all=self._on_apply_all  # ← “모든 이미지에 적용” 버튼용
+            on_apply_all=self._on_apply_all,
+            on_clear_individual = self._on_clear_individual
         )
         self.preview.pack(fill="both", expand=True)
         right.add(pre_frame, weight=5)
@@ -193,6 +194,25 @@ class MainWindow(BaseTk):
             s.save()
         except Exception:
             pass
+
+    def _on_clear_individual(self):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts or not self._active_src:
+            messagebox.showinfo("개별 지정 해제", "해제할 이미지를 먼저 선택하세요.")
+            return
+
+        meta = self.posts[key]
+        img_map = meta.get("img_anchors") or {}
+        if self._active_src in img_map:
+            del img_map[self._active_src]
+            if not img_map:
+                meta["img_anchors"] = {}
+            # 썸네일 오버레이 갱신 + 미리보기 새로고침
+            self._refresh_gallery_overlay(key)
+            self.on_preview()
+            messagebox.showinfo("개별 지정 해제", "현재 이미지가 게시물 기본 위치를 따르도록 복구되었습니다.")
+        else:
+            messagebox.showinfo("개별 지정 해제", "이 이미지에는 개별 지정이 없습니다.")
 
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, _out_root_str, _roots,

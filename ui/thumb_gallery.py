@@ -30,14 +30,27 @@ def _draw_badge(square_img: Image.Image, text="•", bg=(76,175,80), fg=(255,255
     r = 9
     cx, cy = W - r - 6, r + 6
     d = ImageDraw.Draw(square_img, "RGBA")
+
+    # 배지 원
     d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(*bg, 255))
-    # 글자
+
+    # 폰트
     try:
         font = ImageFont.truetype("arial.ttf", 12)
     except Exception:
         font = ImageFont.load_default()
-    tw, th = d.textsize(text, font=font)
+
+    # 글자 크기 측정: Pillow 신버전은 textbbox 사용
+    try:
+        bbox = d.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except Exception:
+        # 구버전 Pillow 폴백
+        tw, th = d.textsize(text, font=font)
+
+    # 중앙 정렬 텍스트
     d.text((cx - tw // 2, cy - th // 2 - 1), text, font=font, fill=fg)
+
 
 class ThumbGallery(ttk.Frame):
     """썸네일 그리드. 더블클릭으로 활성화 콜백 호출 + 앵커 오버레이/배지."""

@@ -245,9 +245,11 @@ class PreviewPane(ttk.Frame):
     """Before/After + Swap + (그리드/드래그) 위치 지정 + 드래그 유령 워터마크."""
     def __init__(self, master,
                  on_anchor_change: Callable[[Tuple[float,float]], None] | None = None,
-                 on_apply_all: Callable[[Tuple[float,float]], None] | None = None):
+                 on_apply_all: Callable[[Tuple[float,float]], None] | None = None,
+                 on_clear_individual=None):
         super().__init__(master)
         self._on_anchor_change = on_anchor_change
+        self._on_clear_individual = on_clear_individual
         self._on_apply_all = on_apply_all
         self._placement_mode = tk.StringVar(value="grid")
 
@@ -266,8 +268,11 @@ class PreviewPane(ttk.Frame):
                         value="drag", command=self._on_mode_change).pack(side="left", padx=(4,0))
 
         # ✅ 추가: 모든 이미지에 적용
-        ttk.Button(top, text="모든 이미지에 적용", command=self._on_apply_all_clicked)\
-           .pack(side="left", padx=(12,0))
+        ttk.Button(top, text="모든 이미지에 적용", command=lambda: on_apply_all and on_apply_all(self._anchor_norm)
+                   ).pack(side="left", padx=(12, 4))
+        ttk.Button(top, text="현재 이미지 기본 따르기",
+                   command=lambda: self._on_clear_individual and self._on_clear_individual()
+                   ).pack(side="left")
 
         container = ttk.Frame(self); container.pack(fill="both", expand=True, pady=4)
         self.box_before = tk.Frame(container, bd=1, relief="solid")
