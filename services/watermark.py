@@ -42,7 +42,7 @@ def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2
     return best
 
 def add_text_watermark(canvas, text, opacity_pct, scale_pct, fill_rgb, stroke_rgb, stroke_width, anchor_norm, font_path):
-    if not text:
+    if not text or not str(text).strip():
         return canvas
 
     sprite = get_wm_sprite(

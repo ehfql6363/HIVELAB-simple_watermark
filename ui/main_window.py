@@ -275,8 +275,10 @@ class MainWindow(BaseTk):
         meta = self.posts[key]
 
         # 루트 텍스트 규칙 적용 (빈 문자열이면 비활성화)
-        raw = getattr(meta["root"], "wm_text", None)
-        wm_text = (settings.default_wm_text or "").strip() if raw is None else (raw or "").strip()
+        # raw = getattr(meta["root"], "wm_text", None)
+        _raw = meta["root"].wm_text
+        _root_txt = ("" if _raw is None else _raw.strip())
+        wm_text = "" if _root_txt == "" else (_root_txt or settings.default_wm_text)
 
         # 유령 워터마크 프리뷰 설정 전달: 비활성화면 None 전달(유령 숨김)
         if wm_text:

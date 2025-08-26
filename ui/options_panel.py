@@ -152,7 +152,7 @@ class OptionsPanel(ttk.Frame):
         for iid in self.tree.get_children():
             root = self.tree.set(iid, "root")
             wm = self.tree.set(iid, "wm_text")
-            roots.append(RootConfig(path=Path(root), wm_text=wm or DEFAULT_WM_TEXT))
+            roots.append(RootConfig(path=Path(root), wm_text=("" if wm is None else str(wm))))
         return roots
 
     def collect_options(self):
