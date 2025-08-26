@@ -1,6 +1,11 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Tuple, Callable, Optional
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+
 from PIL import Image
 
 from settings import AppSettings, RootConfig
@@ -8,25 +13,16 @@ from services.discovery import scan_posts
 from services.image_ops import load_image
 from services.resize import resize_contain
 from services.watermark import add_text_watermark
-from services.writer import save_image  # ✅ save_image 사용
+from services.writer import save_image  # ✅ 고속 저장(옵션 튜닝)
 
 class AppController:
     def __init__(self):
         self._processed = 0
+        # 미리보기/반복 리사이즈 캐시(LRU)
+        self._canvas_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
+        self._canvas_cache_limit = 64
 
-    def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> Optional[str]:
-        """
-        None -> 기본값 사용
-        ""(빈 문자열) -> 비활성화
-        그 외 문자열 -> 그대로 사용
-        """
-        raw = getattr(rc, "wm_text", None)
-        if raw is None:
-            t = (settings.default_wm_text or "").strip()
-            return t if t else None
-        t = (raw or "").strip()
-        return t if t else None
-
+    # ---------- 스캔 ----------
     def scan_posts_multi(self, roots: List[RootConfig]) -> Dict[str, dict]:
         """
         - 루트에 바로 이미지가 있으면 단일 게시물로 간주(__SELF__)
@@ -38,7 +34,7 @@ class AppController:
             sub = scan_posts(root)
             for post_name, files in sub.items():
                 if post_name == "__SELF__":
-                    key = root.name                  # 이 폴더 자체가 게시물
+                    key = root.name
                     post_dir = root
                     display_post = root.name
                 else:
@@ -49,10 +45,11 @@ class AppController:
                     "root": rc,
                     "post_name": display_post,
                     "files": files,
-                    "post_dir": post_dir,            # 저장시 사용할 실제 폴더
+                    "post_dir": post_dir,  # 저장시 사용할 실제 폴더
                 }
         return posts
 
+    # ---------- 공통 유틸 ----------
     def _choose_anchor(self, meta: dict, settings: AppSettings, src: Optional[Path] = None):
         # 우선순위: 이미지 앵커 > 게시물 앵커 > 기본 앵커
         if src is not None:
@@ -63,6 +60,28 @@ class AppController:
             return meta["anchor"]
         return settings.wm_anchor
 
+    def _canvas_key(self, src: Path, target: Tuple[int, int], bg_rgb: Tuple[int, int, int]):
+        try:
+            mt = src.stat().st_mtime_ns
+        except Exception:
+            mt = 0
+        return (str(src), mt, int(target[0]), int(target[1]), tuple(bg_rgb))
+
+    def _get_resized_canvas(self, src: Path, target: Tuple[int, int], bg_rgb: Tuple[int, int, int]) -> Image.Image:
+        """원본→리사이즈 결과를 LRU 캐시."""
+        key = self._canvas_key(src, target, bg_rgb)
+        if key in self._canvas_cache:
+            im = self._canvas_cache.pop(key)
+            self._canvas_cache[key] = im  # LRU 최신화
+            return im
+        base = load_image(src).convert("RGB")
+        canvas = base if tuple(target) == (0, 0) else resize_contain(base, target, bg_rgb)
+        self._canvas_cache[key] = canvas
+        if len(self._canvas_cache) > self._canvas_cache_limit:
+            self._canvas_cache.popitem(last=False)
+        return canvas
+
+    # ---------- 미리보기 ----------
     def preview_by_key(
         self,
         key: str,
@@ -74,80 +93,141 @@ class AppController:
         if not meta or not meta["files"]:
             raise ValueError("No images in this post.")
         src = selected_src or meta["files"][0]
+
         before = load_image(src).convert("RGB")
 
+        # 리사이즈 베이스(캐시 사용)
         tgt = settings.sizes[0]
+        canvas = self._get_resized_canvas(src, tgt, settings.bg_color)
 
-        canvas = before.copy() if tuple(tgt) == (0, 0) else resize_contain(before, tgt, settings.bg_color)
-
-        wm_text = self._resolve_wm_text(meta["root"], settings)
+        # 워터마크 텍스트(빈 문자열이면 워터마크 생략)
+        wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
         anchor = self._choose_anchor(meta, settings, src)
 
-        if wm_text:  # 텍스트가 있을 때만 적용
-            after = add_text_watermark(
-                canvas, text=wm_text,
-                opacity_pct=settings.wm_opacity, scale_pct=settings.wm_scale_pct,
-                fill_rgb=settings.wm_fill_color, stroke_rgb=settings.wm_stroke_color,
-                stroke_width=settings.wm_stroke_width, anchor_norm=anchor,
-                font_path=settings.wm_font_path,
-            )
-        else:
-            after = canvas.copy()
+        after = add_text_watermark(
+            canvas,
+            text=wm_text if wm_text else "",
+            opacity_pct=settings.wm_opacity,
+            scale_pct=settings.wm_scale_pct,
+            fill_rgb=settings.wm_fill_color,
+            stroke_rgb=settings.wm_stroke_color,
+            stroke_width=settings.wm_stroke_width,
+            anchor_norm=anchor,
+            font_path=settings.wm_font_path,
+        ) if wm_text else canvas.copy()
+
         return before, after
 
-    def start_batch(self, settings, posts, progress_cb, done_cb, error_cb=None):
-        import threading
-        total = sum(len(meta["files"]) for meta in posts.values()) * len(settings.sizes)
+    # ---------- 출력 경로 ----------
+    def _output_dir_for(self, src: Path, rc: RootConfig, out_root: Path, post_name: str) -> Path:
+        """
+        출력 경로: out_root / rc.path.name / (src.parent relative to rc.path)
+        - 계정/게시물 업로드:  out_root/계정/게시물
+        - 게시물만 업로드:    out_root/게시물
+        - 내부 더 깊은 구조도 그대로 보존
+        """
+        base = out_root / rc.path.name
+        try:
+            rel = src.parent.relative_to(rc.path)
+        except Exception:
+            rel = Path(post_name) if (rc.path / post_name).exists() else Path()
+        return (base / rel) if str(rel) not in ("", ".") else base
+
+    # ---------- 일괄 처리(병렬) ----------
+    def start_batch(
+        self,
+        settings: AppSettings,
+        posts: Dict[str, dict],
+        progress_cb: Callable[[int], None],
+        done_cb: Callable[[int], None],
+        error_cb: Callable[[str], None] | None = None,
+    ):
+        """
+        ThreadPoolExecutor로 병렬 처리.
+        - JPEG 저장 옵션: quality=90, optimize=False, progressive=False (빠른 저장)
+        - progress_cb / error_cb / done_cb는 기존과 동일하게 호출
+        """
         self._processed = 0
 
-        def _output_dir_for(src: Path, rc, out_root: Path, post_name: str) -> Path:
-            """
-            출력 경로: out_root / rc.path.name / (src.parent relative to rc.path)
-            - 계정/게시물 업로드:  out_root/계정/게시물
-            - 게시물만 업로드:    out_root/게시물
-            - 게시물 내부에 더 깊은 하위 폴더가 있으면 그 구조도 그대로 보존
-            """
-            base = out_root / rc.path.name
-            try:
-                rel = src.parent.relative_to(rc.path)
-            except Exception:
-                # 혹시 relative_to 실패하면 최소한 post_name 폴더는 유지
-                rel = Path(post_name) if (rc.path / post_name).exists() else Path()
-            return (base / rel) if str(rel) not in ("", ".") else base
+        # 작업 목록 생성
+        jobs: List[tuple[RootConfig, dict, Path, int, int]] = []
+        for _, meta in posts.items():
+            rc: RootConfig = meta["root"]
+            for src in meta["files"]:
+                for (w, h) in settings.sizes:
+                    jobs.append((rc, meta, src, int(w), int(h)))
 
-        def worker():
-            try:
-                for key, meta in posts.items():
-                    rc = meta["root"]
-                    wm_text = self._resolve_wm_text(rc, settings)  # ← 여기!
+        total = len(jobs)
+        if total == 0:
+            if done_cb: done_cb(0)
+            return
 
-                    for src in meta["files"]:
-                        for (w, h) in settings.sizes:
-                            try:
-                                anchor = self._choose_anchor(meta, settings, src)
-                                im = self._process_image(src, (w, h), settings, wm_text, anchor)
+        # 워커 함수
+        def _do(rc: RootConfig, meta: dict, src: Path, w: int, h: int) -> None:
+            wm_text = (rc.wm_text or "").strip() or settings.default_wm_text
+            anchor = self._choose_anchor(meta, settings, src)
+            # 리사이즈 베이스(일괄 처리도 동일 경로 → 캐시 활용)
+            canvas = self._get_resized_canvas(src, (w, h), settings.bg_color)
+            # 워터마크(빈 문자열이면 생략)
+            out_img = add_text_watermark(
+                canvas,
+                text=wm_text if wm_text else "",
+                opacity_pct=settings.wm_opacity,
+                scale_pct=settings.wm_scale_pct,
+                fill_rgb=settings.wm_fill_color,
+                stroke_rgb=settings.wm_stroke_color,
+                stroke_width=settings.wm_stroke_width,
+                anchor_norm=anchor,
+                font_path=settings.wm_font_path,
+            ) if wm_text else canvas
+            # 저장
+            out_dir = self._output_dir_for(src, rc, settings.output_root, meta["post_name"])
+            dst = out_dir / f"{src.stem}_wm.jpg"
+            save_image(
+                out_img,
+                dst,
+                quality=90,         # 속도/용량 균형
+                optimize=False,     # 빠르게
+                progressive=False   # 빠르게
+            )
 
-                                out_dir = _output_dir_for(src, rc, settings.output_root, post)
-                                dst = out_dir / f"{src.stem}_wm.jpg"
-                                save_image(im, dst, quality=92)  # ← 폴더 생성 포함
+        # 병렬 실행
+        max_workers = min(8, (os.cpu_count() or 4))
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futs = [ex.submit(_do, rc, meta, src, w, h) for (rc, meta, src, w, h) in jobs]
+                for f in as_completed(futs):
+                    try:
+                        f.result()
+                    except Exception as e:
+                        if error_cb:
+                            error_cb(str(e))
+                    finally:
+                        self._processed += 1
+                        if progress_cb:
+                            progress_cb(self._processed)
+        except Exception as e:
+            if error_cb:
+                error_cb(str(e))
+        finally:
+            if done_cb:
+                done_cb(self._processed)
 
-                            except Exception as e:
-                                if error_cb: error_cb(f"{src} {w}x{h}: {e}")
-                            finally:
-                                self._processed += 1
-                                if progress_cb: progress_cb(self._processed)
-                if done_cb: done_cb(self._processed)
-            except Exception as e:
-                if error_cb: error_cb(str(e))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _process_image(self, src, target, settings, wm_text, anchor) -> Image.Image:
+    # ---------- 단일 이미지 처리(내부) ----------
+    def _process_image(
+        self,
+        src: Path,
+        target: Tuple[int, int],
+        settings: AppSettings,
+        wm_text: str,
+        anchor
+    ) -> Image.Image:
+        """(현재는 캐시 경유 경로 사용하므로 미사용일 수 있으나 유지)"""
         im = load_image(src).convert("RGB")
         canvas = im if tuple(target) == (0, 0) else resize_contain(im, target, settings.bg_color)
-        if not wm_text:  # ← 비어있으면 워터마크 적용 안 함
+        if not wm_text:
             return canvas
-        return add_text_watermark(
+        out = add_text_watermark(
             canvas,
             text=wm_text,
             opacity_pct=settings.wm_opacity,
@@ -158,3 +238,4 @@ class AppController:
             anchor_norm=anchor,
             font_path=settings.wm_font_path,
         )
+        return out
