@@ -2,102 +2,99 @@
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
+from typing import Optional
 
 class ScrollFrame(ttk.Frame):
-    def __init__(self, master, *, height: int | None = None, **kw):
-        super().__init__(master, **kw)
-
+    """상단 옵션처럼 '세로 스크롤'이 필요한 얕은 컨테이너.
+    - Canvas + inner Frame 구조
+    - 스크롤바는 물론, '마우스가 위에 있을 때' 휠 스크롤 동작
+    - height 지정 시 고정 높이(없으면 자연 높이)
+    """
+    def __init__(self, master, height: Optional[int] = None):
+        super().__init__(master)
         self.canvas = tk.Canvas(self, highlightthickness=0)
         if height:
-            self.canvas.configure(height=int(height))  # 표시 높이가 있으면 스크롤 여유가 생김
+            self.canvas.configure(height=int(height))
+
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vbar.set)
 
         self.inner = ttk.Frame(self.canvas)
-        self.win_id = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self._win_id = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
 
-        self.canvas.pack(side="left", fill="x", expand=True)
+        self.canvas.pack(side="left", fill="both", expand=True)
         self.vbar.pack(side="right", fill="y")
 
-        # scrollregion/width 동기화
+        # 레이아웃 동기
         self.inner.bind("<Configure>", self._on_inner_config)
         self.canvas.bind("<Configure>", self._on_canvas_config)
 
-        # ✅ 휠 이벤트: 영역에 마우스가 들어오면 전역 바인딩, 나가면 해제
-        self._wheel_bound = False
-        for w in (self, self.canvas, self.inner, self.vbar):
-            w.bind("<Enter>", self._bind_all_wheel, add="+")
-            w.bind("<Leave>", self._maybe_unbind_all_wheel, add="+")
-        # (주의) bind_all은 꼭 들어온 프레임에서만 켜고, 나가면 꺼야 다른 영역 스크롤과 충돌 안 납니다.
+        # 휠 스크롤: bind_all(+포인터 가드)로 헤더 위에서 자연 동작
+        self._activate_wheel_on_hover(self)
 
-    # ---- geometry sync ----
-    def _on_inner_config(self, _):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        self.canvas.itemconfigure(self.win_id, width=self.canvas.winfo_width())
-
-    def _on_canvas_config(self, e):
-        self.canvas.itemconfigure(self.win_id, width=e.width)
-
-    # ---- wheel routing ----
-    def _owns(self, w: tk.Widget | None) -> bool:
-        """주어진 위젯이 이 ScrollFrame의 자손인지 검사"""
-        while w is not None:
-            if w is self:
-                return True
-            w = w.master
-        return False
+    # --- wheel helpers ---
+    def _activate_wheel_on_hover(self, widget):
+        widget.bind("<Enter>", self._bind_all_wheel, add="+")
+        widget.bind("<Leave>", self._unbind_all_wheel, add="+")
+        # inner에도 진입/이탈 걸어두면 자식 위에서도 잘 동작
+        self.inner.bind("<Enter>", self._bind_all_wheel, add="+")
+        self.inner.bind("<Leave>", self._unbind_all_wheel, add="+")
+        self.canvas.bind("<Enter>", self._bind_all_wheel, add="+")
+        self.canvas.bind("<Leave>", self._unbind_all_wheel, add="+")
 
     def _bind_all_wheel(self, _=None):
-        if self._wheel_bound:
-            return
-        self._wheel_bound = True
-        # Windows/macOS
-        self.canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
-        # Linux
-        self.canvas.bind_all("<Button-4>", self._on_btn4, add="+")
-        self.canvas.bind_all("<Button-5>", self._on_btn5, add="+")
+        # add="+"로 여러 곳에서 공존 가능
+        self.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        self.bind_all("<Button-4>", self._on_btn4, add="+")  # Linux up
+        self.bind_all("<Button-5>", self._on_btn5, add="+")  # Linux down
 
-    def _maybe_unbind_all_wheel(self, _=None):
-        # 자식으로 이동할 때도 Leave가 들어오므로, 포인터가 정말 밖으로 나갔는지 약간 지연 확인
-        self.after(10, self._check_pointer_out)
+    def _unbind_all_wheel(self, _=None):
+        # 전역 바인딩 해제는 다른 위젯의 바인딩까지 지우므로 생략
+        # (여러 바인딩 공존 + 포인터 가드로 충돌 방지)
+        pass
 
-    def _check_pointer_out(self):
-        x, y = self.winfo_pointerxy()
-        w = self.winfo_containing(x, y)
-        if not self._owns(w):
-            self._unbind_all_wheel()
-
-    def _unbind_all_wheel(self):
-        if not self._wheel_bound:
-            return
+    def _pointer_inside_me(self, e) -> bool:
         try:
-            self.canvas.unbind_all("<MouseWheel>")
-            self.canvas.unbind_all("<Button-4>")
-            self.canvas.unbind_all("<Button-5>")
-        finally:
-            self._wheel_bound = False
+            w = self.winfo_containing(e.x_root, e.y_root)
+            # self 또는 자손이면 True
+            while w is not None:
+                if w is self:
+                    return True
+                w = w.master
+        except Exception:
+            pass
+        return False
 
     def _on_wheel(self, e):
-        # 포인터가 지금도 내 영역 위인지 확인 (다른 영역이면 무시)
-        x, y = self.winfo_pointerxy()
-        w = self.winfo_containing(x, y)
-        if not self._owns(w):
-            return
-        # delta는 환경마다 다르니 방향만 사용
-        step = -1 if e.delta > 0 else +1
+        if not self._pointer_inside_me(e):
+            return  # 다른 ScrollFrame/위젯에게 양보
+        delta = e.delta
+        # Windows/macOS: 120 단위, macOS는 더 작을 수 있음 → 부호 기준
+        step = -1 if delta > 0 else 1
+        # 고해상도 휠에서 과도 스크롤 방지
+        if abs(delta) >= 120:
+            step *= int(abs(delta) / 120)
         self.canvas.yview_scroll(step, "units")
         return "break"
 
     def _on_btn4(self, e):
-        # Linux wheel up
-        x, y = self.winfo_pointerxy()
-        if self._owns(self.winfo_containing(x, y)):
-            self.canvas.yview_scroll(-3, "units")
-            return "break"
+        if not self._pointer_inside_me(e):
+            return
+        self.canvas.yview_scroll(-3, "units")
+        return "break"
 
     def _on_btn5(self, e):
-        # Linux wheel down
-        x, y = self.winfo_pointerxy()
-        if self._owns(self.winfo_containing(x, y)):
-            self.canvas.yview_scroll(+3, "units")
-            return "break"
+        if not self._pointer_inside_me(e):
+            return
+        self.canvas.yview_scroll(+3, "units")
+        return "break"
+
+    # --- layout sync ---
+    def _on_inner_config(self, _):
+        bbox = self.canvas.bbox("all")
+        if bbox:
+            self.canvas.configure(scrollregion=bbox)
+
+    def _on_canvas_config(self, e):
+        # inner 폭을 캔버스 폭에 맞춤
+        self.canvas.itemconfigure(self._win_id, width=e.width)
