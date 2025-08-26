@@ -25,6 +25,7 @@ class OptionsPanel(ttk.Frame):
     def __init__(self, master, on_change: Optional[Callable[[], None]] = None):
         super().__init__(master)
         self._on_change = on_change
+        self._recent_output_dir: Optional[Path] = None
 
         # 최근 폴더들
         self._recent_output_dir: Optional[Path] = None  # 출력 루트 다이얼로그
@@ -32,21 +33,21 @@ class OptionsPanel(ttk.Frame):
         self._recent_font_dir: Optional[Path] = None    # 폰트 파일 다이얼로그
 
         # ---------------- 상단: 출력 루트 + 타겟 크기 ----------------
-        top = ttk.Frame(self); top.pack(fill="x")
+        top = ttk.Frame(self);
+        top.pack(fill="x")
 
+        # ✅ 출력 루트
         ttk.Label(top, text="출력 루트:").grid(row=0, column=0, sticky="w")
         self.var_output = tk.StringVar(value="")
-        ttk.Entry(top, textvariable=self.var_output, width=50)\
-            .grid(row=0, column=1, sticky="we", padx=4)
-        ttk.Button(top, text="찾기…", command=self._browse_output)\
-            .grid(row=0, column=2, padx=4)
+        ttk.Entry(top, textvariable=self.var_output, width=50).grid(row=0, column=1, sticky="we", padx=4)
+        ttk.Button(top, text="찾기…", command=self._browse_output).grid(row=0, column=2, padx=4)
 
-        size_frame = ttk.Frame(top); size_frame.grid(row=0, column=3, padx=(8,0), sticky="w")
+        size_frame = ttk.Frame(top);
+        size_frame.grid(row=0, column=3, padx=8, sticky="w")
         ttk.Label(size_frame, text="타겟 크기:").grid(row=0, column=0, sticky="w")
         preset = ["원본 그대로"] + [f"{w}x{h}" for (w, h) in DEFAULT_SIZES]
-        self.var_size = tk.StringVar(value=preset[1])  # 필요시 preset[0]로 변경 가능
-        self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size,
-                                    values=preset, width=12, state="readonly")
+        self.var_size = tk.StringVar(value=preset[1])
+        self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset, width=12, state="readonly")
         self.cb_size.grid(row=1, column=0, sticky="w")
         self.cb_size.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
 
@@ -157,7 +158,7 @@ class OptionsPanel(ttk.Frame):
     def collect_options(self):
         size_str = self.var_size.get().lower().replace(" ", "")
         if "원본" in size_str:
-            sizes = [(0, 0)]  # (0,0) = 원본 유지
+            sizes = [(0, 0)]
         else:
             try:
                 w, h = map(int, size_str.split("x"))
@@ -166,13 +167,14 @@ class OptionsPanel(ttk.Frame):
                 sizes = [DEFAULT_SIZES[0]]
 
         font_path = self.var_font.get().strip()
-        out_root_str = self.get_output_root_str()
+        out_root_str = (self.var_output.get() or "").strip()  # ✅ 복구
+
         return (
             sizes,
             self.var_bg.get().strip(),
             int(self.var_wm_opacity.get()),
             int(self.var_wm_scale.get()),
-            out_root_str,
+            out_root_str,  # ✅ 여기로 전달
             self.get_roots(),
             self.var_fill.get().strip() or "#000000",
             self.var_stroke.get().strip() or "#FFFFFF",
