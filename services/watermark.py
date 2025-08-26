@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
+from functools import lru_cache
 
 DEFAULT_FONT_CANDIDATES = [
     "arial.ttf", "tahoma.ttf", "segoeui.ttf",
@@ -40,44 +41,17 @@ def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2
             high = mid - 1
     return best
 
-def add_text_watermark(
-    img: Image.Image,
-    text: str,
-    opacity_pct: int,
-    scale_pct: int,
-    fill_rgb: Tuple[int,int,int] = (0, 0, 0),
-    stroke_rgb: Tuple[int,int,int] = (255, 255, 255),
-    stroke_width: int = 2,
-    anchor_norm=(0.5, 0.5),
-    font_path: Optional[Path] = None,
-) -> Image.Image:
-    """텍스트 워터마크를 임의 위치에 배치."""
+def add_text_watermark(canvas, text, opacity_pct, scale_pct, fill_rgb, stroke_rgb, stroke_width, anchor_norm, font_path):
     if not text:
-        return img
-
-    W, H = img.size
-    short = min(W, H)
-    target_w = max(1, int(short * (scale_pct / 100.0)))
-
-    font = pick_font(_fit_font_by_width(text, target_w, stroke_width=stroke_width, font_path=font_path), font_path)
-    tw, th = _measure_text(font, text, stroke_width=stroke_width)
-
-    ax = min(1.0, max(0.0, float(anchor_norm[0])))
-    ay = min(1.0, max(0.0, float(anchor_norm[1])))
-    cx = ax * W; cy = ay * H
-    x = int(round(cx - tw / 2)); y = int(round(cy - th / 2))
-    x = max(0, min(x, W - tw)); y = max(0, min(y, H - th))
-
-    alpha = int(255 * (opacity_pct / 100.0))
-    fill_rgba = (*fill_rgb, alpha)
-    stroke_rgba = (*stroke_rgb, alpha)
-
-    over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(over)
-    d.text((x, y), text, font=font, fill=fill_rgba,
-           stroke_width=max(0, int(stroke_width)), stroke_fill=stroke_rgba)
-    base = img.convert("RGBA")
-    return Image.alpha_composite(base, over).convert("RGB")
+        return canvas
+    sprite = get_wm_sprite(text, scale_pct, opacity_pct, fill_rgb, stroke_rgb, stroke_width, font_path, canvas.size)
+    cx = int(anchor_norm[0] * canvas.width)
+    cy = int(anchor_norm[1] * canvas.height)
+    x = cx - sprite.width//2
+    y = cy - sprite.height//2
+    out = canvas.copy()
+    out.alpha_composite(sprite, (x, y)) if out.mode == "RGBA" else out.convert("RGBA").alpha_composite(sprite, (x,y)).convert("RGB")
+    return out
 
 def add_center_watermark(*args, **kwargs):
     kwargs.pop("anchor_norm", None)
@@ -135,3 +109,46 @@ def paste_overlay(canvas: Image.Image, overlay: "Image.Image", anchor_norm: tupl
     y = int(anchor_norm[1] * canvas.height - overlay.height / 2)
     canvas.paste(overlay, (x, y), overlay)
     return canvas
+
+def _pick_font(path, size):
+    return ImageFont.truetype(str(path), size=size) if path else ImageFont.load_default()
+
+def _measure(d, text, font, stroke_w):
+    bbox = d.textbbox((0,0), text, font=font, stroke_width=stroke_w)
+    return bbox[2]-bbox[0], bbox[3]-bbox[1]
+
+@lru_cache(maxsize=256)
+def _sprite_key(text, scale_pct, opacity, fill, stroke, stroke_w, font_path_str, short_side):
+    # short_side: 대상 이미지의 짧은 변
+    return (text, int(scale_pct), int(opacity), fill, stroke, int(stroke_w), font_path_str or "", int(short_side))
+
+def _make_sprite(text, scale_pct, opacity, fill, stroke, stroke_w, font_path, short_side):
+    # 텍스트 폭이 짧은 변 * scale_pct% 에 맞도록 폰트 찾기(이진 탐색)
+    target_w = max(1, int(short_side * (scale_pct/100.0)))
+    lo, hi, best = 6, 512, 12
+    d = ImageDraw.Draw(Image.new("L", (4,4)))
+    while lo <= hi:
+        mid = (lo+hi)//2
+        f = _pick_font(font_path, mid)
+        w,_ = _measure(d, text, f, stroke_w)
+        if w <= target_w:
+            best = mid; lo = mid+1
+        else:
+            hi = mid-1
+    f = _pick_font(font_path, best)
+    w,h = _measure(d, text, f, stroke_w)
+    sprite = Image.new("RGBA", (max(1,w), max(1,h)), (0,0,0,0))
+    draw = ImageDraw.Draw(sprite)
+    a = int(255 * (opacity/100.0))
+    draw.text((0,0), text, font=f,
+              fill=(fill[0], fill[1], fill[2], a),
+              stroke_width=max(0, stroke_w),
+              stroke_fill=(stroke[0], stroke[1], stroke[2], a))
+    return sprite
+
+def get_wm_sprite(text, scale_pct, opacity, fill, stroke, stroke_w, font_path, canvas_size):
+    short_side = min(canvas_size)
+    key = _sprite_key(text, scale_pct, opacity, tuple(fill), tuple(stroke), stroke_w,
+                      str(font_path) if font_path else "", short_side)
+    # lru_cache는 “결과”를 캐시하므로, 키로 다시 만들어 사용
+    return _make_sprite(*key)
