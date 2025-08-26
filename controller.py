@@ -8,8 +8,8 @@ from settings import AppSettings, RootConfig
 from services.discovery import scan_posts
 from services.image_ops import load_image
 from services.resize import resize_contain
-from services.watermark import add_text_watermark
 from services.writer import save_image
+from services.watermark import add_text_watermark, make_overlay_sprite, paste_overlay
 
 class AppController:
     def __init__(self):
@@ -96,8 +96,6 @@ class AppController:
                                 anchor = self._choose_anchor(meta, settings, src)  # 이미지마다 선택
                                 img = self._process_image(src, (w, h), settings, wm_text, anchor)
 
-                                # ★ 변경: 사이즈 폴더 제거
-                                # 예전: ... / post / size_folder / f"{src.stem}_wm.jpg"
                                 dst = (
                                     settings.output_root
                                     / root_label
@@ -121,17 +119,22 @@ class AppController:
         im = load_image(src).convert("RGB")
         if tuple(target) == (0, 0):
             canvas = im
+
+            # 원본 크기 기반으로 오버레이 1회 생성
+            overlay = make_overlay_sprite(
+                wm_text, (canvas.width, canvas.height),
+                settings.wm_scale_pct, settings.wm_opacity,
+                settings.wm_fill_color, settings.wm_stroke_color,
+                settings.wm_stroke_width, str(settings.wm_font_path) if settings.wm_font_path else None
+            )
+            return paste_overlay(canvas, overlay, anchor)
         else:
             canvas = resize_contain(im, target, settings.bg_color)
-        out = add_text_watermark(
-            canvas,
-            text=wm_text,
-            opacity_pct=settings.wm_opacity,
-            scale_pct=settings.wm_scale_pct,
-            fill_rgb=settings.wm_fill_color,
-            stroke_rgb=settings.wm_stroke_color,
-            stroke_width=settings.wm_stroke_width,
-            anchor_norm=anchor,
-            font_path=settings.wm_font_path,
-        )
-        return out
+            # ★ (권장) 컨트롤러.start_batch에서 target마다 overlay를 미리 만들어 넘기는 구조로 바꾸면 더 빠름
+            overlay = make_overlay_sprite(
+                wm_text, target,
+                settings.wm_scale_pct, settings.wm_opacity,
+                settings.wm_fill_color, settings.wm_stroke_color,
+                settings.wm_stroke_width, str(settings.wm_font_path) if settings.wm_font_path else None
+            )
+            return paste_overlay(canvas, overlay, anchor)

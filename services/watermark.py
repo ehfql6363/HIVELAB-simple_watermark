@@ -7,6 +7,8 @@ DEFAULT_FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
+_font_cache = {}
+
 def pick_font(size: int, font_path: Optional[Path] = None):
     # 우선 사용자가 선택한 폰트 시도
     if font_path:
@@ -80,3 +82,56 @@ def add_text_watermark(
 def add_center_watermark(*args, **kwargs):
     kwargs.pop("anchor_norm", None)
     return add_text_watermark(*args, **kwargs, anchor_norm=(0.5, 0.5))
+
+def _get_font(font_path: str | None, size: int):
+    key = (font_path or "", int(size))
+    f = _font_cache.get(key)
+    if f: return f
+    from PIL import ImageFont
+    try: f = ImageFont.truetype(font_path, size=size) if font_path else ImageFont.load_default()
+    except: f = ImageFont.load_default()
+    _font_cache[key] = f
+    return f
+
+def make_overlay_sprite(
+    text: str,
+    canvas_wh: tuple[int, int],
+    scale_pct: int,
+    opacity_pct: int,
+    fill_rgb: tuple[int,int,int],
+    stroke_rgb: tuple[int,int,int],
+    stroke_width: int,
+    font_path: str | None,
+):
+    from PIL import Image, ImageDraw
+    W, H = canvas_wh
+    target_w = max(1, int(min(W, H) * (scale_pct / 100.0)))
+
+    # 이진탐색으로 폰트 크기 맞추기
+    lo, hi, best = 8, 512, 8
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        font = _get_font(font_path, mid)
+        d = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        w, h = d.textbbox((0,0), text, font=font, stroke_width=max(0, stroke_width))[2:]
+        if w <= target_w:
+            best = mid; lo = mid + 1
+        else:
+            hi = mid - 1
+
+    font = _get_font(font_path, best)
+    d = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+    tw, th = d.textbbox((0,0), text, font=font, stroke_width=max(0, stroke_width))[2:]
+
+    alpha = int(255 * (opacity_pct / 100.0))
+    over = Image.new("RGBA", (tw, th), (0,0,0,0))
+    d = ImageDraw.Draw(over)
+    d.text((0,0), text, font=font, fill=(*fill_rgb, alpha),
+           stroke_width=max(0, stroke_width), stroke_fill=(*stroke_rgb, alpha))
+    return over
+
+def paste_overlay(canvas: Image.Image, overlay: "Image.Image", anchor_norm: tuple[float,float]) -> Image.Image:
+    x = int(anchor_norm[0] * canvas.width  - overlay.width  / 2)
+    y = int(anchor_norm[1] * canvas.height - overlay.height / 2)
+    canvas.paste(overlay, (x, y), overlay)
+    return canvas
