@@ -42,16 +42,18 @@ def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2
 
 
 class _CheckerCanvas(tk.Canvas):
-    """체커보드 배경 + 단일 이미지 표시 + 3x3 그리드/셀 하이라이트 + 유령 워터마크 스프라이트.
+    """체커보드 대신 단일 배경 사각형 + 이미지 표시 + 3x3 그리드/셀 하이라이트 + 유령 워터마크.
 
-    성능 개선:
-      - <Configure> 시 즉시 프레임은 BILINEAR(빠름), 120ms 뒤 LANCZOS(고품질)로 1회 갱신
-      - 워터마크 텍스트가 빈 문자열이면 유령 스프라이트 생성/표시 안 함
-      - 동일 키면 스프라이트 재생성 안 함
+    성능 포인트:
+      - 배경은 사각형 1개만 그림(체커보드 N개 사각형 제거)
+      - 리사이즈 스케일을 1/64 스텝으로 스냅 → PhotoImage 재생성 빈도 감소
+      - <Configure> 즉시 프레임은 BILINEAR, 160ms 뒤 LANCZOS 1회
+      - 동일 (iw,ih)면 기존 PhotoImage 재사용(이미지 재생성/대입 스킵)
+      - 빈 워터마크 텍스트면 유령 자체를 생성/표시하지 않음
     """
-    def __init__(self, master, tile=12, c1="#E6E6E6", c2="#C8C8C8", **kw):
-        super().__init__(master, highlightthickness=0, background="white", **kw)
-        self.tile = tile; self.c1, self.c2 = c1, c2
+    def __init__(self, master, **kw):
+        super().__init__(master, highlightthickness=0, background="#E9E9E9", **kw)
+
         self._pil_img: Image.Image | None = None
         self._img_id: int | None = None
         self._img_refs = deque(maxlen=4)
@@ -111,14 +113,13 @@ class _CheckerCanvas(tk.Canvas):
 
     # ------- 렌더링/디바운스 -------
     def _queue_render(self, hq: bool=False):
-        # hq=True인 경우엔 고품질 렌더를 예약
+        # hq=True인 경우엔 고품질 렌더 예약
         if hq:
-            # 즉시 프레임은 빠르게
             self._resample_fast = True
             if self._hq_job_id:
                 try: self.after_cancel(self._hq_job_id)
                 except Exception: pass
-            self._hq_job_id = self.after(120, self._render_hq)
+            self._hq_job_id = self.after(160, self._render_hq)
         if not self._pending:
             self._pending = True
             self.after_idle(self._render_full)
@@ -131,7 +132,7 @@ class _CheckerCanvas(tk.Canvas):
             self.after_idle(self._render_full)
 
     def _on_resize(self, _):
-        # 리사이즈 중엔 빠른 렌더 1프레임 + 120ms 뒤 고품질 1회
+        # 리사이즈 중엔 빠른 렌더 1프레임 + 160ms 뒤 고품질 1회
         self._queue_render(hq=True)
 
     # ------- 내부 렌더 루틴 -------
@@ -141,16 +142,9 @@ class _CheckerCanvas(tk.Canvas):
         if w < 4 or h < 4:
             self.after(16, self._render_full); return
 
-        # checker
+        # 배경: 사각형 1개만 사용 (체커보드 수백/수천 사각형 제거)
         self.delete("checker")
-        t = self.tile
-        cols = (w + t - 1) // t; rows = (h + t - 1) // t
-        for r in range(rows):
-            for c in range(cols):
-                x0 = c * t; y0 = r * t
-                x1 = min(x0 + t, w); y1 = min(y0 + t, h)
-                color = self.c1 if (r + c) % 2 == 0 else self.c2
-                self.create_rectangle(x0, y0, x1, y1, fill=color, width=0, tags="checker")
+        self.create_rectangle(0, 0, w, h, fill="#E9E9E9", outline="", width=0, tags="checker")
         self.tag_lower("checker")
 
         # 이미지 없음
@@ -160,22 +154,33 @@ class _CheckerCanvas(tk.Canvas):
             self._clear_overlay()
             return
 
-        # contain 배치 + 2단계 스케일
+        # contain 배치 + 스케일 스냅(1/64 스텝)
         W, H = self._pil_img.size
-        scale = min(w / W, h / H, 1.0)
+        raw_scale = min(w / W, h / H, 1.0)
+        step = 1.0 / 64.0
+        scale = max(step, round(raw_scale / step) * step)
         iw, ih = max(1, int(W*scale)), max(1, int(H*scale))
         x0, y0 = (w - iw)//2, (h - ih)//2
 
         resample = Image.Resampling.BILINEAR if self._resample_fast else Image.Resampling.LANCZOS
-        disp = self._pil_img if (iw == W and ih == H) else self._pil_img.resize((iw, ih), resample)
-        tkimg = ImageTk.PhotoImage(disp)
-        self._img_refs.append(tkimg)
 
-        if self._img_id is None:
-            self._img_id = self.create_image(x0, y0, image=tkimg, anchor="nw", tags="content")
-        else:
-            self.itemconfigure(self._img_id, image=tkimg)
+        # (iw,ih) 같으면 기존 PhotoImage 그대로 두고 좌표만 이동 → 재생성 스킵
+        reuse_image = (
+            self._img_id is not None
+            and iw == self._last["iw"]
+            and ih == self._last["ih"]
+        )
+        if reuse_image:
             self.coords(self._img_id, x0, y0)
+        else:
+            disp = self._pil_img if (iw == W and ih == H) else self._pil_img.resize((iw, ih), resample)
+            tkimg = ImageTk.PhotoImage(disp)
+            self._img_refs.append(tkimg)
+            if self._img_id is None:
+                self._img_id = self.create_image(x0, y0, image=tkimg, anchor="nw", tags="content")
+            else:
+                self.itemconfigure(self._img_id, image=tkimg)
+                self.coords(self._img_id, x0, y0)
 
         self.tag_lower("checker"); self.tag_raise("content")
         self._last.update({"w":w,"h":h,"x0":x0,"y0":y0,"iw":iw,"ih":ih})
@@ -218,7 +223,7 @@ class _CheckerCanvas(tk.Canvas):
         self.tag_raise("cellsel"); self.tag_raise("grid")
 
     def _ensure_wm_sprite(self):
-        # 워터마크 설정 없음 or 텍스트가 비었으면 스프라이트/유령 제거
+        # 설정 없음/텍스트 빈 값이면 스프라이트/유령 제거
         if not self._wm_cfg:
             self._wm_sprite_key = None
             self._wm_sprite_tk = None
@@ -241,7 +246,10 @@ class _CheckerCanvas(tk.Canvas):
         sw = int(self._wm_cfg.get("stroke_w", 2))
         font_path = self._wm_cfg.get("font_path") or None
 
-        target_w = max(1, int(min(iw, ih) * (scale_pct / 100.0)))
+        # 타깃 폭도 8px 단위로 스냅 → 스프라이트 재생성 빈도 감소
+        target_w_raw = max(1, int(min(iw, ih) * (scale_pct / 100.0)))
+        target_w = (target_w_raw + 7) // 8 * 8
+
         key = (txt, op, scale_pct, fill, stroke, sw, target_w, font_path)
         if key == self._wm_sprite_key and self._wm_sprite_tk is not None:
             return
@@ -265,7 +273,6 @@ class _CheckerCanvas(tk.Canvas):
             self.itemconfigure(self._wmghost_id, image=self._wm_sprite_tk)
 
     def _draw_wmghost(self):
-        # 그리드 보이는 중엔 유령 숨김 / 스프라이트 없거나 마커 없음 → 숨김
         if self._grid_visible or not self._wm_sprite_tk or self._marker_norm is None:
             self._clear_wmghost(); return
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
@@ -311,7 +318,6 @@ class PreviewPane(ttk.Frame):
         ttk.Radiobutton(top, text="드래그", variable=self._placement_mode,
                         value="drag", command=self._on_mode_change).pack(side="left", padx=(4,0))
 
-        # ✅ 추가: 모든 이미지에 적용 / 개별 해제
         ttk.Button(top, text="모든 이미지에 적용",
                    command=lambda: on_apply_all and on_apply_all(self._anchor_norm)
                    ).pack(side="left", padx=(12, 4))
@@ -347,12 +353,11 @@ class PreviewPane(ttk.Frame):
 
     # ------- 외부 API -------
     def set_wm_preview_config(self, cfg: Optional[Dict]):
-        # 빈 텍스트면 유령도 안 뜨도록 _CheckerCanvas에서 처리함
+        # 빈 텍스트면 유령도 안 뜨도록 _CheckerCanvas에서 처리
         self.canvas_before.set_wm_config(cfg)
         self.canvas_after.set_wm_config(cfg)
 
     def show(self, before_img: Image.Image, after_img: Image.Image):
-        # controller에서 이미 합성된 결과를 받아서, 여기서는 스케일/표시만
         self._pil_before = before_img
         self._pil_after = after_img
         left, right = (self._pil_after, self._pil_before) if self._swapped else (self._pil_before, self._pil_after)
