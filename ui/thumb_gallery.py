@@ -4,7 +4,8 @@ import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
 from typing import Callable, List, Optional, Dict, Set
-from PIL import Image, ImageTk, ImageOps  # ImageOps: EXIF 회전 보정
+from PIL import Image, ImageTk, ImageOps
+from concurrent.futures import ThreadPoolExecutor, Future
 
 class ThumbGallery(ttk.Frame):
     """썸네일 그리드. 더블클릭으로 활성화 콜백 호출."""
@@ -43,8 +44,15 @@ class ThumbGallery(ttk.Frame):
         self._imgs: Dict[Path, ImageTk.PhotoImage] = {}
         self._active: Optional[Path] = None
 
+        self._executor = ThreadPoolExecutor(max_workers=3)
+        self._futures: Dict[Path, Future] = {}
+
     # ---------- Public ----------
     def clear(self):
+        for f in self._futures.values():
+            f.cancel()
+        self._futures.clear()
+
         for w in self.inner.winfo_children():
             w.destroy()
         self._tiles.clear()
@@ -60,51 +68,71 @@ class ThumbGallery(ttk.Frame):
             return
         size = self.thumb_size
         pad = 8
-        for i, p in enumerate(files):
-            r, c = divmod(i, self.cols)
+
+        def _make_tile(p: Path, r: int, c: int):
             tile = tk.Frame(self.inner, bd=1, relief="groove")
             tile.grid(row=r, column=c, padx=pad, pady=pad, sticky="nsew")
-
-            # 썸네일 (정사각형 캔버스 안에 contain) + EXIF 회전 보정 + 파일 핸들 즉시 닫기
-            try:
-                with Image.open(p) as im:
-                    im = ImageOps.exif_transpose(im)
-                    im.thumbnail((size, size), Image.Resampling.LANCZOS)
-                    bg = Image.new("RGB", (size, size), (245, 245, 245))
-                    ox = (size - im.width) // 2
-                    oy = (size - im.height) // 2
-                    bg.paste(im, (ox, oy))
-                tkim = ImageTk.PhotoImage(bg)
-            except Exception:
-                bg = Image.new("RGB", (size, size), (200, 200, 200))
-                tkim = ImageTk.PhotoImage(bg)
-
-            lbl_img = tk.Label(tile, image=tkim)
-            lbl_img.image = tkim  # 강참조
-            self._imgs[p] = tkim
+            # placeholder
+            ph = Image.new("RGB", (size, size), (235, 235, 235))
+            tkim = ImageTk.PhotoImage(ph)
+            lbl_img = tk.Label(tile, image=tkim);
+            lbl_img.image = tkim
             lbl_img.pack(padx=4, pady=(4, 0))
-
             lbl_txt = tk.Label(tile, text=p.name, wraplength=size, justify="center")
             lbl_txt.pack(padx=4, pady=(2, 6))
+            self._tiles[p] = tile
 
-            # 더블클릭 활성화
+            # 더블클릭 핸들러는 미리 바인딩
             def _activate(ev=None, path=p):
                 self.set_active(path)
-                if callable(self.on_activate):
-                    self.on_activate(path)
+                if callable(self.on_activate): self.on_activate(path)
+
             for w in (tile, lbl_img, lbl_txt):
                 w.bind("<Double-Button-1>", _activate)
 
-            self._tiles[p] = tile
+        for i, p in enumerate(files):
+            r, c = divmod(i, self.cols)
+            _make_tile(p, r, c)
+            self._futures[p] = self._executor.submit(self._build_thumb_pil, p, size)
 
-            # ✅ 타일 생성 직후, 배지 필요하면 표시
-            if p in self._badge_paths:
-                self._show_badge_for(p)
+        def _drain():
+            done = []
+            for p, fut in list(self._futures.items()):
+                if fut.done():
+                    done.append(p)
+                    pil_img = fut.result() if not fut.cancelled() else None
+                    if pil_img is not None and p in self._tiles:
+                        # PhotoImage는 메인스레드에서
+                        tkim = ImageTk.PhotoImage(pil_img)
+                        self._imgs[p] = tkim
+                        # 타일 첫 번째 child가 이미지 라벨
+                        lbl_img = self._tiles[p].winfo_children()[0]
+                        lbl_img.configure(image=tkim);
+                        lbl_img.image = tkim
+            for p in done: self._futures.pop(p, None)
+            if self._futures:
+                self.after(16, _drain)  # 60fps 수준으로 폴링
 
-        # 그리드 확장성
+        _drain()
+
         for c in range(self.cols):
             self.inner.grid_columnconfigure(c, weight=1)
         self._update_scroll()
+
+    @staticmethod
+    def _build_thumb_pil(p: Path, size: int) -> Image.Image:
+        from PIL import ImageOps
+        try:
+            with Image.open(p) as im:
+                im = ImageOps.exif_transpose(im)
+                im.thumbnail((size, size), Image.Resampling.LANCZOS)
+                bg = Image.new("RGB", (size, size), (245, 245, 245))
+                ox = (size - im.width) // 2;
+                oy = (size - im.height) // 2
+                bg.paste(im, (ox, oy))
+            return bg
+        except Exception:
+            return Image.new("RGB", (size, size), (200, 200, 200))
 
     # ✅ 공개 API: 앵커가 있는 이미지들을 배지로 표시
     def set_badged(self, paths: Set[Path]):
