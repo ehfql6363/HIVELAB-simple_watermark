@@ -171,12 +171,12 @@ class MainWindow(BaseTk):
     # ---- 콜백/로직 ----
     def _on_options_changed(self):
         # UI 즉시 저장(사이즈/색/폰트 등) — 출력 폴더는 컨트롤러에서 자동 결정
-        (sizes, bg_hex, wm_opacity, wm_scale, _out_root_str, roots,
+        (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
         recent_out, recent_font = self.opt.get_recent_dirs()
 
         s = self.app_settings
-        s.output_root = Path("")  # 빈 Path("") → 컨트롤러가 게시물 폴더에 저장
+        s.output_root = Path(out_root_str) if out_root_str else s.output_root
         s.sizes = sizes if sizes else list(DEFAULT_SIZES)
         s.bg_color = hex_to_rgb(bg_hex or "#FFFFFF")
         s.wm_opacity = int(wm_opacity)
@@ -214,11 +214,11 @@ class MainWindow(BaseTk):
             messagebox.showinfo("개별 지정 해제", "이 이미지에는 개별 지정이 없습니다.")
 
     def _collect_settings(self) -> AppSettings:
-        (sizes, bg_hex, wm_opacity, wm_scale, _out_root_str, _roots,
+        (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, _roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
 
         return AppSettings(
-            output_root=Path(""),  # 컨트롤러가 post_dir(원본 폴더)에 직접 저장
+            output_root=Path(out_root_str) if out_root_str else Path(""),
             sizes=sizes if sizes else list(DEFAULT_SIZES),
             bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
             wm_opacity=int(wm_opacity),
@@ -245,6 +245,7 @@ class MainWindow(BaseTk):
 
     def on_select_post(self, key: str | None):
         self._active_src = None
+
         if key and key in self.posts:
             meta = self.posts[key]
             files = meta.get("files", [])
@@ -339,14 +340,38 @@ class MainWindow(BaseTk):
         if not self.posts:
             messagebox.showinfo("시작", "스캔된 게시물이 없습니다.")
             return
+
+        out_root_str = self.opt.get_output_root_str()
+        if not out_root_str:
+            messagebox.showinfo("출력 폴더", "출력 루트 폴더를 먼저 지정하세요.")
+            return
+
         settings = self._collect_settings()
+        out_root = Path(out_root_str)
+        try:
+            out_root.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            messagebox.showerror("출력 폴더", f"출력 루트를 만들 수 없습니다:\n{e}")
+            return
+
+        # ✅ 상태바에 출력 루트 알려주기 (+ 버튼 활성화)
+        self.status.set_output_root(out_root)
+        self.status.enable_open_button(True)
 
         total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
         self.status.reset(total)
 
-        def on_prog(n): self.status.update_progress(n)
-        def on_done(n): self.status.finish(n)
-        def on_err(msg): self.status.log_error(msg)
+        def on_prog(n):
+            self.status.update_progress(n)
+
+        # ✅ 완료 로그 + 버튼 보장
+        def on_done(n, _out=out_root):
+            self.status.finish(n)
+            self.status.log_info(f"저장 위치: {_out}")
+            self.status.enable_open_button(True)
+
+        def on_err(msg):
+            self.status.log_error(msg)
 
         self.controller.start_batch(settings, self.posts, on_prog, on_done, on_err)
 

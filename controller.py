@@ -85,33 +85,43 @@ class AppController:
         )
         return before, after
 
-    def start_batch(
-        self,
-        settings: AppSettings,
-        posts: Dict[str, dict],
-        progress_cb, done_cb, error_cb=None,
-    ):
+    def start_batch(self, settings, posts, progress_cb, done_cb, error_cb=None):
         import threading
         total = sum(len(meta["files"]) for meta in posts.values()) * len(settings.sizes)
         self._processed = 0
 
+        def _output_dir_for(src: Path, rc, out_root: Path, post_name: str) -> Path:
+            """
+            출력 경로: out_root / rc.path.name / (src.parent relative to rc.path)
+            - 계정/게시물 업로드:  out_root/계정/게시물
+            - 게시물만 업로드:    out_root/게시물
+            - 게시물 내부에 더 깊은 하위 폴더가 있으면 그 구조도 그대로 보존
+            """
+            base = out_root / rc.path.name
+            try:
+                rel = src.parent.relative_to(rc.path)
+            except Exception:
+                # 혹시 relative_to 실패하면 최소한 post_name 폴더는 유지
+                rel = Path(post_name) if (rc.path / post_name).exists() else Path()
+            return (base / rel) if str(rel) not in ("", ".") else base
+
         def worker():
             try:
                 for key, meta in posts.items():
-                    rc: RootConfig = meta["root"]
-                    post_dir: Path = meta.get("post_dir") or (rc.path / meta["post_name"])
+                    rc = meta["root"]      # RootConfig
+                    post = meta["post_name"]
                     wm_text = (rc.wm_text or "").strip() or settings.default_wm_text
-
-                    # ✅ 항상 게시물 폴더에 저장
-                    base_dir = post_dir
 
                     for src in meta["files"]:
                         for (w, h) in settings.sizes:
                             try:
                                 anchor = self._choose_anchor(meta, settings, src)
-                                img = self._process_image(src, (w, h), settings, wm_text, anchor)
-                                dst = base_dir / f"{src.stem}_wm.jpg"   # ✅ 사이즈 하위폴더 없음
-                                save_image(img, dst)
+                                im = self._process_image(src, (w, h), settings, wm_text, anchor)
+
+                                out_dir = _output_dir_for(src, rc, settings.output_root, post)
+                                dst = out_dir / f"{src.stem}_wm.jpg"
+                                save_image(im, dst, quality=92)  # ← 폴더 생성 포함
+
                             except Exception as e:
                                 if error_cb: error_cb(f"{src} {w}x{h}: {e}")
                             finally:
