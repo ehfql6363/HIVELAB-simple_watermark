@@ -21,25 +21,29 @@ def _make_swatch(parent, hex_color: str):
     return sw
 
 class OptionsPanel(ttk.Frame):
-    """옵션 패널 (출력/크기/색/폰트/루트 목록) + 파일 다이얼로그 최근 폴더 기억"""
+    """옵션 패널 (크기/색/폰트/루트 목록) + 파일 다이얼로그 최근 폴더 기억
+       ※ 저장 위치는 항상 '각 게시물 폴더'로 고정
+    """
     def __init__(self, master, on_change: Optional[Callable[[], None]] = None):
         super().__init__(master)
         self._on_change = on_change
-        self._recent_output_dir: Optional[Path] = None
-        self._recent_font_dir: Optional[Path] = None
+        self._recent_root_dir: Optional[Path] = None   # ✅ 최근 '루트 추가' 다이얼로그 위치
+        self._recent_font_dir: Optional[Path] = None   # ✅ 최근 폰트 다이얼로그 위치
 
-        # 출력 + 타겟 크기(단일)
+        # 상단: 저장 위치 안내 + 타겟 크기(단일)
         top = ttk.Frame(self); top.pack(fill="x")
-        ttk.Label(top, text="출력 폴더:").grid(row=0, column=0, sticky="w")
-        self.var_output = tk.StringVar()
-        ttk.Entry(top, textvariable=self.var_output, width=50).grid(row=0, column=1, sticky="we", padx=4)
-        ttk.Button(top, text="찾기…", command=self._browse_output).grid(row=0, column=2, padx=4)
 
-        size_frame = ttk.Frame(top); size_frame.grid(row=0, column=3, padx=8, sticky="w")
+        # ✅ 출력 폴더 UI 삭제 → 안내 라벨로 대체
+        info = ttk.Frame(top); info.grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(info, text="저장 위치:").pack(side="left")
+        ttk.Label(info, text="각 게시물 폴더에 저장 (자동)", foreground="#666").pack(side="left", padx=6)
+
+        size_frame = ttk.Frame(top); size_frame.grid(row=1, column=0, padx=0, pady=(4,0), sticky="w")
         ttk.Label(size_frame, text="타겟 크기:").grid(row=0, column=0, sticky="w")
         preset = ["원본 그대로"] + [f"{w}x{h}" for (w, h) in DEFAULT_SIZES]
-        self.var_size = tk.StringVar(value=preset[1])  # 기본값은 첫 프리셋(원한다면 preset[0]로 바꿔도 OK)
-        self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset, width=12, state="readonly")
+        self.var_size = tk.StringVar(value=preset[1])  # 필요하면 preset[0]로 바꿔도 OK
+        self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset,
+                                    width=12, state="readonly")
         self.cb_size.grid(row=1, column=0, sticky="w")
         self.cb_size.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
 
@@ -141,7 +145,7 @@ class OptionsPanel(ttk.Frame):
 
     def collect_options(self):
         size_str = self.var_size.get().lower().replace(" ", "")
-        if "원본" in size_str:  # ✅ '원본 그대로' 선택 시
+        if "원본" in size_str:
             sizes = [(0, 0)]  # (0,0) = 원본 유지(센티널)
         else:
             try:
@@ -151,12 +155,13 @@ class OptionsPanel(ttk.Frame):
                 sizes = [DEFAULT_SIZES[0]]
 
         font_path = self.var_font.get().strip()
+        out_root_str = ""  # ✅ 출력 폴더 개념 제거
         return (
             sizes,
             self.var_bg.get().strip(),
             int(self.var_wm_opacity.get()),
             int(self.var_wm_scale.get()),
-            self.var_output.get().strip(),
+            out_root_str,
             self.get_roots(),
             self.var_fill.get().strip() or "#000000",
             self.var_stroke.get().strip() or "#FFFFFF",
@@ -165,9 +170,11 @@ class OptionsPanel(ttk.Frame):
         )
 
     def set_initial_options(self, settings):
-        try: self.var_output.set(str(settings.output_root or ""))
-        except: pass
-        # set_initial_options(self, settings) 내 크기 반영 부분 교체
+        # 출력 폴더는 더 이상 사용 안 함
+        # 최근 '루트 추가' 다이얼로그 초기 위치는 이 필드로 재사용
+        self._recent_root_dir = settings.last_dir_output_dialog
+        self._recent_font_dir = settings.last_dir_font_dialog
+
         try:
             s0 = settings.sizes[0] if settings.sizes else None
             if s0 == (0, 0):
@@ -189,10 +196,8 @@ class OptionsPanel(ttk.Frame):
         except: pass
         try: self.var_font.set(str(settings.wm_font_path) if settings.wm_font_path else "")
         except: pass
-        # 최근 폴더 기억
-        self._recent_output_dir = settings.last_dir_output_dialog
-        self._recent_font_dir = settings.last_dir_font_dialog
-        # 스와치
+
+        # 스와치 싱크
         try:
             self._update_swatch(self.sw_bg, self.var_bg.get())
             self._update_swatch(self.sw_fill, self.var_fill.get())
@@ -200,25 +205,15 @@ class OptionsPanel(ttk.Frame):
         except: pass
 
     def get_recent_dirs(self) -> Tuple[Optional[Path], Optional[Path]]:
-        return (self._recent_output_dir, self._recent_font_dir)
+        # ✅ 첫 값: 최근 '루트 추가' 경로(옛 output 자리에 재사용)
+        return (self._recent_root_dir, self._recent_font_dir)
 
-    def set_recent_dirs(self, out_dir: Optional[Path], font_dir: Optional[Path]):
-        self._recent_output_dir = out_dir
+    def set_recent_dirs(self, root_dir: Optional[Path], font_dir: Optional[Path]):
+        self._recent_root_dir = root_dir
         self._recent_font_dir = font_dir
 
     # ---------- Browsers ----------
-    def _browse_output(self):
-        # initialdir: 현재 값 > 최근 출력 > 홈
-        cur = Path(self.var_output.get().strip()) if self.var_output.get().strip() else None
-        initial = str(cur if (cur and cur.exists()) else (self._recent_output_dir or Path.home()))
-        path = filedialog.askdirectory(title="출력 폴더 선택", initialdir=initial)
-        if path:
-            self.var_output.set(path)
-            self._recent_output_dir = Path(path)
-            self._notify_change()
-
     def _browse_font(self):
-        # initialdir: 현재 파일의 부모 > 최근 폰트 > 홈
         curf = self.var_font.get().strip()
         parent = Path(curf).parent if curf else None
         initial = str(parent if (parent and parent.exists()) else (self._recent_font_dir or Path.home()))
@@ -245,20 +240,26 @@ class OptionsPanel(ttk.Frame):
         self.tree.insert("", "end", values=(path_str, wm_text))
 
     def _add_root(self):
-        base = self._recent_output_dir or Path.home()
+        base = self._recent_root_dir or Path.home()
         path = filedialog.askdirectory(title="입력 루트 선택 (게시물 폴더 포함)", initialdir=str(base))
-        if path: self._insert_or_update_root(path, DEFAULT_WM_TEXT)
+        if path:
+            self._insert_or_update_root(path, DEFAULT_WM_TEXT)
+            try: self._recent_root_dir = Path(path)
+            except: pass
+            self._notify_change()
 
     def _remove_root(self):
         sel = self.tree.selection()
         if not sel:
             messagebox.showinfo("삭제", "삭제할 루트를 선택하세요."); return
         for iid in sel: self.tree.delete(iid)
+        self._notify_change()
 
     def _remove_all(self):
         if not self.tree.get_children(): return
         if messagebox.askyesno("모두 삭제", "루트 목록을 모두 삭제할까요?"):
             for iid in self.tree.get_children(): self.tree.delete(iid)
+            self._notify_change()
 
     # ---------- DnD ----------
     def _on_drop(self, event):
@@ -270,6 +271,9 @@ class OptionsPanel(ttk.Frame):
             path = Path(p)
             if path.is_dir():
                 self._insert_or_update_root(str(path), DEFAULT_WM_TEXT)
+                try: self._recent_root_dir = path
+                except: pass
+        self._notify_change()
 
     # ---------- Inline edit ----------
     def _on_tree_double_click(self, event):
@@ -292,6 +296,7 @@ class OptionsPanel(ttk.Frame):
         if commit and self._edit_iid and self._edit_col == "#2":
             self.tree.set(self._edit_iid, "wm_text", self._edit_entry.get())
         self._edit_entry.destroy(); self._edit_entry = None; self._edit_iid = None; self._edit_col = None
+        self._notify_change()
 
     # ---------- Color helpers ----------
     def _pick_color(self, var: tk.StringVar, swatch: tk.Label):

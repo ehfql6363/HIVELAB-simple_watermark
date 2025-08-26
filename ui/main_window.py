@@ -119,7 +119,7 @@ class MainWindow(BaseTk):
         recent_out, recent_font = self.opt.get_recent_dirs()
 
         s = self.app_settings
-        s.output_root = Path(out_root_str) if out_root_str else s.output_root
+        s.output_root = Path("")
         s.sizes = sizes if sizes else list(DEFAULT_SIZES)
         s.bg_color = hex_to_rgb(bg_hex or "#FFFFFF")
         s.wm_opacity = int(wm_opacity)
@@ -137,12 +137,9 @@ class MainWindow(BaseTk):
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
 
-        if not out_root_str and roots:
-            messagebox.showinfo("출력 폴더", "출력 폴더가 비어 있습니다. 첫 번째 루트의 export로 저장합니다.")
-        default_out = (Path(roots[0].path) / "export") if roots else Path("export")
-
+        # ✅ 출력 폴더 비워두면 그대로 빈 Path("") 반환 → 컨트롤러가 post_dir에 저장
         return AppSettings(
-            output_root=Path(out_root_str) if out_root_str else default_out,
+            output_root=Path(""),
             sizes=sizes if sizes else list(DEFAULT_SIZES),
             bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
             wm_opacity=int(wm_opacity),
@@ -151,7 +148,7 @@ class MainWindow(BaseTk):
             wm_fill_color=hex_to_rgb(wm_fill_hex or "#000000"),
             wm_stroke_color=hex_to_rgb(wm_stroke_hex or "#FFFFFF"),
             wm_stroke_width=int(wm_stroke_w),
-            wm_anchor=self.app_settings.wm_anchor,  # 기본 앵커(중앙 등)
+            wm_anchor=self.app_settings.wm_anchor,
             wm_font_path=Path(wm_font_path_str) if wm_font_path_str else None,
         )
 
