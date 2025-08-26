@@ -14,6 +14,19 @@ class AppController:
     def __init__(self):
         self._processed = 0
 
+    def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> Optional[str]:
+        """
+        None -> 기본값 사용
+        ""(빈 문자열) -> 비활성화
+        그 외 문자열 -> 그대로 사용
+        """
+        raw = getattr(rc, "wm_text", None)
+        if raw is None:
+            t = (settings.default_wm_text or "").strip()
+            return t if t else None
+        t = (raw or "").strip()
+        return t if t else None
+
     def scan_posts_multi(self, roots: List[RootConfig]) -> Dict[str, dict]:
         """
         - 루트에 바로 이미지가 있으면 단일 게시물로 간주(__SELF__)
@@ -64,25 +77,22 @@ class AppController:
         before = load_image(src).convert("RGB")
 
         tgt = settings.sizes[0]
-        if tuple(tgt) == (0, 0):  # 원본 그대로
-            canvas = before.copy()
-        else:
-            canvas = resize_contain(before, tgt, settings.bg_color)
 
-        wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
+        canvas = before.copy() if tuple(tgt) == (0, 0) else resize_contain(before, tgt, settings.bg_color)
+
+        wm_text = self._resolve_wm_text(meta["root"], settings)
         anchor = self._choose_anchor(meta, settings, src)
 
-        after = add_text_watermark(
-            canvas,
-            text=wm_text,
-            opacity_pct=settings.wm_opacity,
-            scale_pct=settings.wm_scale_pct,
-            fill_rgb=settings.wm_fill_color,
-            stroke_rgb=settings.wm_stroke_color,
-            stroke_width=settings.wm_stroke_width,
-            anchor_norm=anchor,
-            font_path=settings.wm_font_path,
-        )
+        if wm_text:  # 텍스트가 있을 때만 적용
+            after = add_text_watermark(
+                canvas, text=wm_text,
+                opacity_pct=settings.wm_opacity, scale_pct=settings.wm_scale_pct,
+                fill_rgb=settings.wm_fill_color, stroke_rgb=settings.wm_stroke_color,
+                stroke_width=settings.wm_stroke_width, anchor_norm=anchor,
+                font_path=settings.wm_font_path,
+            )
+        else:
+            after = canvas.copy()
         return before, after
 
     def start_batch(self, settings, posts, progress_cb, done_cb, error_cb=None):
@@ -108,9 +118,8 @@ class AppController:
         def worker():
             try:
                 for key, meta in posts.items():
-                    rc = meta["root"]      # RootConfig
-                    post = meta["post_name"]
-                    wm_text = (rc.wm_text or "").strip() or settings.default_wm_text
+                    rc = meta["root"]
+                    wm_text = self._resolve_wm_text(rc, settings)  # ← 여기!
 
                     for src in meta["files"]:
                         for (w, h) in settings.sizes:
@@ -133,14 +142,12 @@ class AppController:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _process_image(self, src: Path, target: Tuple[int, int],
-                       settings: AppSettings, wm_text: str, anchor) -> Image.Image:
+    def _process_image(self, src, target, settings, wm_text, anchor) -> Image.Image:
         im = load_image(src).convert("RGB")
-        if tuple(target) == (0, 0):
-            canvas = im
-        else:
-            canvas = resize_contain(im, target, settings.bg_color)
-        out = add_text_watermark(
+        canvas = im if tuple(target) == (0, 0) else resize_contain(im, target, settings.bg_color)
+        if not wm_text:  # ← 비어있으면 워터마크 적용 안 함
+            return canvas
+        return add_text_watermark(
             canvas,
             text=wm_text,
             opacity_pct=settings.wm_opacity,
@@ -151,4 +158,3 @@ class AppController:
             anchor_norm=anchor,
             font_path=settings.wm_font_path,
         )
-        return out
