@@ -273,18 +273,24 @@ class MainWindow(BaseTk):
 
         settings = self._collect_settings()
         meta = self.posts[key]
-        wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
 
-        # 유령 워터마크 프리뷰 설정 전달
-        wm_cfg = {
-            "text": wm_text,
-            "opacity": settings.wm_opacity,
-            "scale_pct": settings.wm_scale_pct,
-            "fill": settings.wm_fill_color,
-            "stroke": settings.wm_stroke_color,
-            "stroke_w": settings.wm_stroke_width,
-            "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
-        }
+        # 루트 텍스트 규칙 적용 (빈 문자열이면 비활성화)
+        raw = getattr(meta["root"], "wm_text", None)
+        wm_text = (settings.default_wm_text or "").strip() if raw is None else (raw or "").strip()
+
+        # 유령 워터마크 프리뷰 설정 전달: 비활성화면 None 전달(유령 숨김)
+        if wm_text:
+            wm_cfg = {
+                "text": wm_text,
+                "opacity": settings.wm_opacity,
+                "scale_pct": settings.wm_scale_pct,
+                "fill": settings.wm_fill_color,
+                "stroke": settings.wm_stroke_color,
+                "stroke_w": settings.wm_stroke_width,
+                "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
+            }
+        else:
+            wm_cfg = None
         self.preview.set_wm_preview_config(wm_cfg)
 
         # 이 미리보기에서 사용할 앵커: 이미지 > 게시물 > 기본
