@@ -119,14 +119,16 @@ class ThumbGallery(ttk.Frame):
             lbl_txt = tk.Label(tile, text=p.name, wraplength=size, justify="center")
             lbl_txt.pack(padx=4, pady=(2, 6))
 
-            # 더블클릭 활성화
             def _activate(ev=None, path=p):
                 self.set_active(path)
                 if callable(self.on_activate):
                     self.on_activate(path)
-            tile.bind("<Double-Button-1>", _activate)
-            lbl_img.bind("<Double-Button-1>", _activate)
-            lbl_txt.bind("<Double-Button-1>", _activate)
+            # tile.bind("<Double-Button-1>", _activate)
+            # lbl_img.bind("<Double-Button-1>", _activate)
+            # lbl_txt.bind("<Double-Button-1>", _activate)
+            tile.bind("<Button-1>", _activate)
+            lbl_img.bind("<Button-1>", _activate)
+            lbl_txt.bind("<Button-1>", _activate)
 
             self._tiles[p] = tile
 
