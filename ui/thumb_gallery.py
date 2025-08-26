@@ -1,19 +1,56 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os
+
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
 from typing import Callable, List, Optional, Dict, Tuple
-from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 
-from PIL import Image, ImageTk
+# -------------------- overlay helpers --------------------
+
+def _measure_text_bbox(d: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, stroke_w: int) -> Tuple[int, int]:
+    try:
+        l, t, r, b = d.textbbox((0, 0), text, font=font, stroke_width=max(0, stroke_w))
+        return r - l, b - t
+    except Exception:
+        w, h = font.getsize(text)
+        return int(w), int(h)
+
+def _draw_anchor_marker(square_img: Image.Image, content_box: Tuple[int,int,int,int],
+                        anchor: Tuple[float,float], color=(30,144,255), radius=6):
+    x0, y0, x1, y1 = content_box
+    iw, ih = max(1, x1 - x0), max(1, y1 - y0)
+    nx = min(1.0, max(0.0, float(anchor[0])))
+    ny = min(1.0, max(0.0, float(anchor[1])))
+    cx = int(x0 + nx * iw)
+    cy = int(y0 + ny * ih)
+    d = ImageDraw.Draw(square_img, "RGBA")
+    r = max(2, int(radius))
+    d.ellipse((cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1), fill=(255, 255, 255, 230))
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(color[0], color[1], color[2], 230))
+
+def _draw_badge(square_img: Image.Image, text="•", bg=(76,175,80), fg=(255,255,255)):
+    W, H = square_img.size
+    r = 9
+    cx, cy = W - r - 6, r + 6
+    d = ImageDraw.Draw(square_img, "RGBA")
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(bg[0], bg[1], bg[2], 255))
+    try:
+        font = ImageFont.truetype("arial.ttf", 12)
+    except Exception:
+        font = ImageFont.load_default()
+    tw, th = _measure_text_bbox(d, text, font, 0)
+    d.text((cx - tw // 2, cy - th // 2 - 1), text, font=font, fill=fg)
+
+# -------------------- gallery --------------------
 
 class ThumbGallery(ttk.Frame):
-    """썸네일 그리드 (클릭으로 활성화). 썸네일 생성은 병렬, UI 업데이트는 메인 스레드."""
-    def __init__(self, master,
-                 on_activate: Optional[Callable[[Path], None]] = None,
+    """썸네일 그리드(스크롤 가능) + 앵커 오버레이/배지.
+       - 클릭 한 번으로 on_activate 호출
+       - 갤러리/썸네일 어디 위든 휠 스크롤 동작(전역 바인딩 + 포인터 가드)
+    """
+    def __init__(self, master, on_activate: Optional[Callable[[Path], None]] = None,
                  thumb_size: int = 160, cols: int = 5, height: int = 220):
         super().__init__(master)
         self.on_activate = on_activate
@@ -21,37 +58,31 @@ class ThumbGallery(ttk.Frame):
         self.cols = int(cols)
         self.fixed_height = int(height)
 
-        # 스크롤 컨테이너
+        # canvas + inner
         self.canvas = tk.Canvas(self, highlightthickness=0, height=self.fixed_height)
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vbar.set)
         self.inner = tk.Frame(self.canvas)
-        self.win_id = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self._win_id = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.vbar.pack(side="right", fill="y")
 
         self.inner.bind("<Configure>", self._on_inner_config)
         self.canvas.bind("<Configure>", self._on_canvas_config)
 
-        # 마우스 휠(호버 시)
-        self._enable_wheel_for(self.canvas)
-        self._enable_wheel_for(self.inner)
+        # ✅ 전역 휠 바인딩: 항상 켜둠(포인터 가드로 범위 제한)
+        self._install_global_wheel()
 
-        # 상태
+        # state
         self._tiles: Dict[Path, tk.Frame] = {}
-        self._imgs: Dict[Path, ImageTk.PhotoImage] = {}  # PhotoImage 강참조
+        self._imgs: Dict[Path, ImageTk.PhotoImage] = {}
         self._active: Optional[Path] = None
 
-        # --- 병렬 썸네일 준비 ---
-        self._executor = ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4))
-        self._gen_token = 0  # 세대 토큰(새 목록 로드시 증가)
-        # PIL 썸네일 LRU 캐시 (PhotoImage는 Tk 객체라 캐시에 넣지 않음)
-        self._pil_cache: "OrderedDict[Tuple[str,int,int], Image.Image]" = OrderedDict()
-        self._pil_cache_limit = 256
+        self._default_anchor: Tuple[float, float] = (0.5, 0.5)
+        self._img_anchor_map: Dict[Path, Tuple[float, float]] = {}
 
-        self.bind("<Destroy>", self._on_destroy, add="+")
+    # ---------- public API ----------
 
-    # ----- 외부 API -----
     def clear(self):
         for w in self.inner.winfo_children():
             w.destroy()
@@ -61,55 +92,42 @@ class ThumbGallery(ttk.Frame):
         self._update_scroll()
 
     def set_files(self, files: List[Path],
-                  default_anchor: Tuple[float, float] | None = None,
+                  default_anchor: Tuple[float, float] = (0.5, 0.5),
                   img_anchor_map: Optional[Dict[Path, Tuple[float, float]]] = None):
-        """files만 사용. (default_anchor/img_anchor_map은 호환용 인자)"""
         self.clear()
-        self._gen_token += 1
-        token = self._gen_token
-
+        self._default_anchor = tuple(default_anchor)
+        self._img_anchor_map = dict(img_anchor_map or {})
         if not files:
             return
-
-        size = self.thumb_size
-        pad = 8
-
-        # 플레이스홀더 하나 만들어 재사용(회색)
-        placeholder = ImageTk.PhotoImage(Image.new("RGB", (size, size), (240, 240, 240)))
+        size, pad = self.thumb_size, 8
 
         for i, p in enumerate(files):
             r, c = divmod(i, self.cols)
             tile = tk.Frame(self.inner, bd=1, relief="groove")
             tile.grid(row=r, column=c, padx=pad, pady=pad, sticky="nsew")
 
-            # 이미지 라벨(플레이스홀더)
-            lbl_img = tk.Label(tile, image=placeholder)
-            lbl_img.image = placeholder
+            tkim = self._make_thumb_with_overlay(p, size)
+            lbl_img = tk.Label(tile, image=tkim)
+            lbl_img.image = tkim
+            self._imgs[p] = tkim
             lbl_img.pack(padx=4, pady=(4, 0))
 
-            # 파일명 라벨
             lbl_txt = tk.Label(tile, text=p.name, wraplength=size, justify="center")
             lbl_txt.pack(padx=4, pady=(2, 6))
 
-            # 클릭 한 번으로 활성화
-            def _activate(ev=None, path=p):
+            def _activate(_=None, path=p):
                 self.set_active(path)
                 if callable(self.on_activate):
                     self.on_activate(path)
-            tile.bind("<Button-1>", _activate)
-            lbl_img.bind("<Button-1>", _activate)
-            lbl_txt.bind("<Button-1>", _activate)
+            # ✅ 단일 클릭 활성화(타일/이미지/텍스트 모두)
+            for w in (tile, lbl_img, lbl_txt):
+                w.bind("<Button-1>", _activate)
 
             self._tiles[p] = tile
 
-        # 컬럼 확장
         for c in range(self.cols):
             self.inner.grid_columnconfigure(c, weight=1)
         self._update_scroll()
-
-        # 백그라운드로 썸네일 생성 & UI 반영
-        for p in files:
-            self._submit_thumb_job(p, size, token)
 
     def set_active(self, path: Optional[Path]):
         if self._active and self._active in self._tiles:
@@ -118,117 +136,93 @@ class ThumbGallery(ttk.Frame):
         if path and path in self._tiles:
             self._tiles[path].configure(bd=2, relief="solid")
 
-    # 호환용(오버레이 안 씀)
-    def update_anchor_overlay(self, default_anchor, img_anchor_map):
-        pass
+    def set_badged(self, paths: set[Path]):
+        pass  # 현재는 개별 앵커 보유 시 자동 배지
 
-    # ----- 내부: 병렬 썸네일 파이프라인 -----
-    def _submit_thumb_job(self, path: Path, size: int, token: int):
-        """캐시 있으면 즉시, 없으면 스레드에서 PIL 썸네일 생성 후 메인 스레드 반영."""
-        key = self._cache_key(path, size)
-        pil = self._pil_cache_get(key)
-        if pil is not None:
-            # 메인 스레드에서 즉시 반영
-            self.after(0, self._apply_thumb, token, path, pil)
-            return
+    def update_anchor_overlay(self, default_anchor: Tuple[float, float],
+                              img_anchor_map: Dict[Path, Tuple[float, float]]):
+        self._default_anchor = tuple(default_anchor)
+        self._img_anchor_map = dict(img_anchor_map or {})
+        for p, tile in self._tiles.items():
+            if p in self._imgs:
+                self._imgs[p] = self._make_thumb_with_overlay(p, self.thumb_size)
+                for w in tile.winfo_children():
+                    if isinstance(w, tk.Label) and getattr(w, "image", None) is not None:
+                        w.configure(image=self._imgs[p]); w.image = self._imgs[p]
+                        break
 
-        def _worker():
-            pil_img = self._make_pil_thumb(path, size)
-            return pil_img
+    # ---------- render ----------
 
-        fut = self._executor.submit(_worker)
-        def _done(_fut):
-            try:
-                pil_img = _fut.result()
-            except Exception:
-                pil_img = Image.new("RGB", (size, size), (200, 200, 200))
-            # 캐시에 넣고 UI 반영 예약
-            self._pil_cache_put(key, pil_img)
-            self.after(0, self._apply_thumb, token, path, pil_img)
-        fut.add_done_callback(_done)
-
-    def _apply_thumb(self, token: int, path: Path, pil: Image.Image):
-        """메인 스레드: PhotoImage 생성 → 해당 타일에 적용(세대 불일치/타일없음은 무시)."""
-        if token != self._gen_token:
-            return  # 오래된 작업
-        tile = self._tiles.get(path)
-        if not tile or not tile.winfo_exists():
-            return
-        # PhotoImage는 메인 스레드에서 생성해야 안전
-        tkim = ImageTk.PhotoImage(pil)
-        self._imgs[path] = tkim
-        # 타일의 첫 Label(image) 찾아 교체
-        for w in tile.winfo_children():
-            if isinstance(w, tk.Label) and getattr(w, "image", None) is not None:
-                w.configure(image=tkim)
-                w.image = tkim
-                break
-
-    def _make_pil_thumb(self, p: Path, size: int) -> Image.Image:
+    def _make_thumb_with_overlay(self, path: Path, size: int) -> ImageTk.PhotoImage:
         try:
-            with Image.open(p) as im:
-                im.load()
-                im.thumbnail((size, size), Image.Resampling.LANCZOS)
-                bg = Image.new("RGB", (size, size), (245, 245, 245))
-                ox = (size - im.width) // 2
-                oy = (size - im.height) // 2
-                bg.paste(im, (ox, oy))
-                return bg
+            im = Image.open(path).convert("RGB")
+            im.thumbnail((size, size), Image.Resampling.LANCZOS)
+            bg = Image.new("RGBA", (size, size), (245, 245, 245, 255))
+            ox = (size - im.width) // 2
+            oy = (size - im.height) // 2
+            bg.paste(im, (ox, oy))
+            content_box = (ox, oy, ox + im.width, oy + im.height)
         except Exception:
-            return Image.new("RGB", (size, size), (200, 200, 200))
+            bg = Image.new("RGBA", (size, size), (200, 200, 200, 255))
+            content_box = (4, 4, size - 4, size - 4)
 
-    def _cache_key(self, p: Path, size: int) -> Tuple[str, int, int]:
-        try:
-            mt = p.stat().st_mtime_ns
-        except Exception:
-            mt = 0
-        return (str(p), mt, size)
+        anchor = self._img_anchor_map.get(path, self._default_anchor)
+        _draw_anchor_marker(bg, content_box, anchor, color=(30, 144, 255), radius=6)
+        if path in self._img_anchor_map:
+            _draw_badge(bg, text="•", bg=(76, 175, 80), fg=(255, 255, 255))
 
-    def _pil_cache_get(self, key) -> Optional[Image.Image]:
-        pil = self._pil_cache.get(key)
-        if pil is not None:
-            # LRU 갱신
-            self._pil_cache.move_to_end(key)
-        return pil
+        return ImageTk.PhotoImage(bg.convert("RGB"))
 
-    def _pil_cache_put(self, key, pil: Image.Image):
-        self._pil_cache[key] = pil
-        self._pil_cache.move_to_end(key)
-        if len(self._pil_cache) > self._pil_cache_limit:
-            self._pil_cache.popitem(last=False)
+    # ---------- scroll plumbing ----------
 
-    # ----- 스크롤/휠 -----
-    def _on_inner_config(self, _):
+    def _on_inner_config(self, _=None):
         self._update_scroll()
 
     def _on_canvas_config(self, e):
-        self.canvas.itemconfigure(self.win_id, width=e.width)
+        self.canvas.itemconfigure(self._win_id, width=e.width)
 
     def _update_scroll(self):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
-    def _enable_wheel_for(self, widget):
-        widget.bind("<Enter>", lambda e: self._bind_wheel(), add="+")
-        widget.bind("<Leave>", lambda e: self._unbind_wheel(), add="+")
-    def _bind_wheel(self):
-        self.canvas.bind("<MouseWheel>", self._on_wheel, add="+")
-        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-3, "units"), add="+")
-        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(+3, "units"), add="+")
-    def _unbind_wheel(self):
-        self.canvas.unbind("<MouseWheel>")
-        self.canvas.unbind("<Button-4>")
-        self.canvas.unbind("<Button-5>")
-    def _on_wheel(self, e):
-        delta = e.delta
-        if delta == 0:
-            return "break"
-        step = -1 * int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
-        self.canvas.yview_scroll(step, "units")
-        return "break"
+    # ---------- wheel handling (always-on bind_all + pointer guard) ----------
 
-    # ----- 종료 처리 -----
-    def _on_destroy(self, _):
+    def _install_global_wheel(self):
+        root = self.winfo_toplevel()
+        # Windows / macOS
+        root.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        # X11 (Linux)
+        root.bind_all("<Button-4>", self._on_btn4, add="+")
+        root.bind_all("<Button-5>", self._on_btn5, add="+")
+
+    def _pointer_inside_me(self, e) -> bool:
         try:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            w = self.winfo_containing(e.x_root, e.y_root)
+            while w is not None:
+                if w is self:
+                    return True
+                w = w.master
         except Exception:
             pass
+        return False
+
+    def _on_wheel(self, e):
+        if not self._pointer_inside_me(e):
+            return
+        # delta를 단위 스텝으로 변환(트랙패드 연속 스크롤 대응)
+        delta = e.delta
+        steps = int(abs(delta) / 120) if abs(delta) >= 120 else 1
+        direction = -1 if delta > 0 else 1
+        self.canvas.yview_scroll(direction * steps, "units")
+        return "break"
+
+    def _on_btn4(self, e):
+        if not self._pointer_inside_me(e):
+            return
+        self.canvas.yview_scroll(-3, "units")
+        return "break"
+
+    def _on_btn5(self, e):
+        if not self._pointer_inside_me(e):
+            return
+        self.canvas.yview_scroll(+3, "units")
+        return "break"
