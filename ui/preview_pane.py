@@ -42,6 +42,13 @@ def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2
 
 
 class _CheckerCanvas(tk.Canvas):
+    """체커보드 배경 + 단일 이미지 표시 + 3x3 그리드/셀 하이라이트 + 유령 워터마크 스프라이트.
+
+    성능 개선:
+      - <Configure> 시 즉시 프레임은 BILINEAR(빠름), 120ms 뒤 LANCZOS(고품질)로 1회 갱신
+      - 워터마크 텍스트가 빈 문자열이면 유령 스프라이트 생성/표시 안 함
+      - 동일 키면 스프라이트 재생성 안 함
+    """
     def __init__(self, master, tile=12, c1="#E6E6E6", c2="#C8C8C8", **kw):
         super().__init__(master, highlightthickness=0, background="white", **kw)
         self.tile = tile; self.c1, self.c2 = c1, c2
@@ -64,12 +71,17 @@ class _CheckerCanvas(tk.Canvas):
         self._wm_sprite_tk: Optional[ImageTk.PhotoImage] = None
         self._wm_sprite_refs = deque(maxlen=2)
 
+        # 렌더 큐/디바운스
         self._pending = False
+        self._resample_fast = False
+        self._hq_job_id: Optional[str] = None
+
         self.bind("<Configure>", self._on_resize)
 
+    # ------- 외부 제어 -------
     def set_image(self, pil_img: Image.Image | None):
         self._pil_img = pil_img
-        self._queue_render()
+        self._queue_render(hq=True)
 
     def set_grid_visible(self, visible: bool):
         self._grid_visible = visible
@@ -88,7 +100,7 @@ class _CheckerCanvas(tk.Canvas):
     def set_wm_config(self, cfg: Optional[Dict]):
         self._wm_cfg = cfg
         self._wm_sprite_key = None
-        self._queue_render()
+        self._queue_render(hq=True)
 
     def event_to_norm(self, ex: int, ey: int) -> Optional[Tuple[float,float]]:
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
@@ -97,20 +109,39 @@ class _CheckerCanvas(tk.Canvas):
         nx = (x - x0) / iw; ny = (y - y0) / ih
         return (min(1.0, max(0.0, nx)), min(1.0, max(0.0, ny)))
 
-    def _queue_render(self):
+    # ------- 렌더링/디바운스 -------
+    def _queue_render(self, hq: bool=False):
+        # hq=True인 경우엔 고품질 렌더를 예약
+        if hq:
+            # 즉시 프레임은 빠르게
+            self._resample_fast = True
+            if self._hq_job_id:
+                try: self.after_cancel(self._hq_job_id)
+                except Exception: pass
+            self._hq_job_id = self.after(120, self._render_hq)
+        if not self._pending:
+            self._pending = True
+            self.after_idle(self._render_full)
+
+    def _render_hq(self):
+        self._hq_job_id = None
+        self._resample_fast = False
         if not self._pending:
             self._pending = True
             self.after_idle(self._render_full)
 
     def _on_resize(self, _):
-        self._queue_render()
+        # 리사이즈 중엔 빠른 렌더 1프레임 + 120ms 뒤 고품질 1회
+        self._queue_render(hq=True)
 
+    # ------- 내부 렌더 루틴 -------
     def _render_full(self):
         self._pending = False
         w = max(1, self.winfo_width()); h = max(1, self.winfo_height())
         if w < 4 or h < 4:
             self.after(16, self._render_full); return
 
+        # checker
         self.delete("checker")
         t = self.tile
         cols = (w + t - 1) // t; rows = (h + t - 1) // t
@@ -122,18 +153,21 @@ class _CheckerCanvas(tk.Canvas):
                 self.create_rectangle(x0, y0, x1, y1, fill=color, width=0, tags="checker")
         self.tag_lower("checker")
 
+        # 이미지 없음
         if self._pil_img is None:
             self.delete("content"); self._img_id = None
             self._last.update({"w":w,"h":h,"x0":0,"y0":0,"iw":1,"ih":1})
             self._clear_overlay()
             return
 
+        # contain 배치 + 2단계 스케일
         W, H = self._pil_img.size
         scale = min(w / W, h / H, 1.0)
         iw, ih = max(1, int(W*scale)), max(1, int(H*scale))
         x0, y0 = (w - iw)//2, (h - ih)//2
 
-        disp = self._pil_img.resize((iw, ih), Image.Resampling.LANCZOS)
+        resample = Image.Resampling.BILINEAR if self._resample_fast else Image.Resampling.LANCZOS
+        disp = self._pil_img if (iw == W and ih == H) else self._pil_img.resize((iw, ih), resample)
         tkimg = ImageTk.PhotoImage(disp)
         self._img_refs.append(tkimg)
 
@@ -145,6 +179,7 @@ class _CheckerCanvas(tk.Canvas):
 
         self.tag_lower("checker"); self.tag_raise("content")
         self._last.update({"w":w,"h":h,"x0":x0,"y0":y0,"iw":iw,"ih":ih})
+
         self._ensure_wm_sprite()
         self._draw_grid_overlay(); self._draw_cell_highlight(); self._draw_wmghost()
 
@@ -183,14 +218,22 @@ class _CheckerCanvas(tk.Canvas):
         self.tag_raise("cellsel"); self.tag_raise("grid")
 
     def _ensure_wm_sprite(self):
+        # 워터마크 설정 없음 or 텍스트가 비었으면 스프라이트/유령 제거
         if not self._wm_cfg:
             self._wm_sprite_key = None
             self._wm_sprite_tk = None
             self._clear_wmghost()
             return
+        txt = (self._wm_cfg.get("text") or "").strip()
+        if txt == "":
+            self._wm_sprite_key = None
+            self._wm_sprite_tk = None
+            self._clear_wmghost()
+            return
+
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
         if iw <= 1 or ih <= 1: return
-        txt = self._wm_cfg.get("text", "") or ""
+
         op = int(self._wm_cfg.get("opacity", 30))
         scale_pct = int(self._wm_cfg.get("scale_pct", 5))
         fill = tuple(self._wm_cfg.get("fill", (0,0,0)))
@@ -210,7 +253,7 @@ class _CheckerCanvas(tk.Canvas):
         fill_rgba = (fill[0], fill[1], fill[2], alpha)
         stroke_rgba = (stroke[0], stroke[1], stroke[2], alpha)
 
-        over = Image.new("RGBA", (tw, th), (0,0,0,0))
+        over = Image.new("RGBA", (max(1, tw), max(1, th)), (0,0,0,0))
         d = ImageDraw.Draw(over)
         d.text((0, 0), txt, font=font, fill=fill_rgba, stroke_width=max(0, sw), stroke_fill=stroke_rgba)
 
@@ -222,7 +265,8 @@ class _CheckerCanvas(tk.Canvas):
             self.itemconfigure(self._wmghost_id, image=self._wm_sprite_tk)
 
     def _draw_wmghost(self):
-        if self._grid_visible or not self._wm_cfg or not self._wm_sprite_tk or self._marker_norm is None:
+        # 그리드 보이는 중엔 유령 숨김 / 스프라이트 없거나 마커 없음 → 숨김
+        if self._grid_visible or not self._wm_sprite_tk or self._marker_norm is None:
             self._clear_wmghost(); return
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
         if iw <= 1 or ih <= 1: self._clear_wmghost(); return
@@ -267,8 +311,9 @@ class PreviewPane(ttk.Frame):
         ttk.Radiobutton(top, text="드래그", variable=self._placement_mode,
                         value="drag", command=self._on_mode_change).pack(side="left", padx=(4,0))
 
-        # ✅ 추가: 모든 이미지에 적용
-        ttk.Button(top, text="모든 이미지에 적용", command=lambda: on_apply_all and on_apply_all(self._anchor_norm)
+        # ✅ 추가: 모든 이미지에 적용 / 개별 해제
+        ttk.Button(top, text="모든 이미지에 적용",
+                   command=lambda: on_apply_all and on_apply_all(self._anchor_norm)
                    ).pack(side="left", padx=(12, 4))
         ttk.Button(top, text="현재 이미지 기본 따르기",
                    command=lambda: self._on_clear_individual and self._on_clear_individual()
@@ -300,11 +345,14 @@ class PreviewPane(ttk.Frame):
 
         self._apply_grid_and_visuals()
 
+    # ------- 외부 API -------
     def set_wm_preview_config(self, cfg: Optional[Dict]):
+        # 빈 텍스트면 유령도 안 뜨도록 _CheckerCanvas에서 처리함
         self.canvas_before.set_wm_config(cfg)
         self.canvas_after.set_wm_config(cfg)
 
     def show(self, before_img: Image.Image, after_img: Image.Image):
+        # controller에서 이미 합성된 결과를 받아서, 여기서는 스케일/표시만
         self._pil_before = before_img
         self._pil_after = after_img
         left, right = (self._pil_after, self._pil_before) if self._swapped else (self._pil_before, self._pil_after)
@@ -323,6 +371,7 @@ class PreviewPane(ttk.Frame):
         self._anchor_norm = (float(norm[0]), float(norm[1]))
         self._refresh_visuals()
 
+    # ------- 내부 동작 -------
     def _get_active_canvas(self) -> _CheckerCanvas:
         return self.canvas_before if self._swapped else self.canvas_after
 

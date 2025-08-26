@@ -163,7 +163,7 @@ class MainWindow(BaseTk):
         def _enforce(_=None):
             if self._sash_job:
                 self.after_cancel(self._sash_job)
-            self._sash_job = self.after(30, _apply_minsize)
+            self._sash_job = self.after(100, _apply_minsize)
 
         right.bind("<Configure>", _enforce)
         self.after(0, _apply_minsize)
