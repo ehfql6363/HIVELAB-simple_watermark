@@ -111,8 +111,7 @@ class MainWindow(BaseTk):
         mid.pack(fill="both", expand=True)
 
         # 좌: 게시물 리스트(자체 스크롤)
-        self.post_list = PostList(mid, on_select=self.on_select_post,
-                                  on_activate=lambda key: self.on_preview())
+        self.post_list = PostList(mid, on_select=self.on_select_post)
         mid.add(self.post_list, weight=1)
 
         # 우: 세로 PanedWindow (미리보기/갤러리)
@@ -255,6 +254,7 @@ class MainWindow(BaseTk):
             self.gallery.set_files(files, default_anchor=default_anchor, img_anchor_map=img_map)
             self.gallery.set_active(None)
             self._wm_anchor = default_anchor
+            self.on_preview()
 
     def _on_activate_image(self, path: Path):
         self._active_src = path
