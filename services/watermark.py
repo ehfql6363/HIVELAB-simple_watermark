@@ -44,14 +44,26 @@ def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2
 def add_text_watermark(canvas, text, opacity_pct, scale_pct, fill_rgb, stroke_rgb, stroke_width, anchor_norm, font_path):
     if not text:
         return canvas
-    sprite = get_wm_sprite(text, scale_pct, opacity_pct, fill_rgb, stroke_rgb, stroke_width, font_path, canvas.size)
+
+    sprite = get_wm_sprite(
+        text, scale_pct, opacity_pct, fill_rgb, stroke_rgb, stroke_width, font_path, canvas.size
+    )
+
     cx = int(anchor_norm[0] * canvas.width)
     cy = int(anchor_norm[1] * canvas.height)
-    x = cx - sprite.width//2
-    y = cy - sprite.height//2
-    out = canvas.copy()
-    out.alpha_composite(sprite, (x, y)) if out.mode == "RGBA" else out.convert("RGBA").alpha_composite(sprite, (x,y)).convert("RGB")
-    return out
+    x = cx - sprite.width // 2
+    y = cy - sprite.height // 2
+
+    # 합성은 RGBA에서 수행
+    if canvas.mode == "RGBA":
+        base = canvas.copy()
+        base.alpha_composite(sprite, (x, y))
+        return base
+    else:
+        base = canvas.convert("RGBA")
+        base.alpha_composite(sprite, (x, y))  # in-place, 반환값 None
+        return base.convert("RGB")
+
 
 def add_center_watermark(*args, **kwargs):
     kwargs.pop("anchor_norm", None)

@@ -22,6 +22,17 @@ class AppController:
         self._canvas_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
         self._canvas_cache_limit = 64
 
+    def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> str:
+        """
+        루트별 텍스트가 ''(빈 문자열)로 명시되면 워터마크 '비활성'.
+        그 외에는 루트별 텍스트 우선, 없으면 기본값.
+        """
+        if rc.wm_text is not None and rc.wm_text.strip() == "":
+            return ""  # 명시적 비활성
+        if (rc.wm_text or "").strip():
+            return rc.wm_text.strip()
+        return (settings.default_wm_text or "").strip()
+
     # ---------- 스캔 ----------
     def scan_posts_multi(self, roots: List[RootConfig]) -> Dict[str, dict]:
         """
@@ -68,13 +79,16 @@ class AppController:
         return (str(src), mt, int(target[0]), int(target[1]), tuple(bg_rgb))
 
     def _get_resized_canvas(self, src: Path, target: Tuple[int, int], bg_rgb: Tuple[int, int, int]) -> Image.Image:
-        """원본→리사이즈 결과를 LRU 캐시."""
         key = self._canvas_key(src, target, bg_rgb)
         if key in self._canvas_cache:
             im = self._canvas_cache.pop(key)
-            self._canvas_cache[key] = im  # LRU 최신화
+            self._canvas_cache[key] = im
             return im
-        base = load_image(src).convert("RGB")
+
+        base = load_image(src)  # 이미 RGB Image 보장
+        if not isinstance(base, Image.Image):
+            raise ValueError(f"이미지 로드 실패(타입 불일치): {src}")
+
         canvas = base if tuple(target) == (0, 0) else resize_contain(base, target, bg_rgb)
         self._canvas_cache[key] = canvas
         if len(self._canvas_cache) > self._canvas_cache_limit:
@@ -94,19 +108,21 @@ class AppController:
             raise ValueError("No images in this post.")
         src = selected_src or meta["files"][0]
 
-        before = load_image(src).convert("RGB")
+        before = load_image(src)
+        if not isinstance(before, Image.Image):
+            raise ValueError(f"이미지 로드 실패(타입 불일치): {src}")
 
-        # 리사이즈 베이스(캐시 사용)
         tgt = settings.sizes[0]
-        canvas = self._get_resized_canvas(src, tgt, settings.bg_color)
+        canvas = before.copy() if tuple(tgt) == (0, 0) else self._get_resized_canvas(src, tgt, settings.bg_color).copy()
 
-        # 워터마크 텍스트(빈 문자열이면 워터마크 생략)
-        wm_text = (meta["root"].wm_text or "").strip() or settings.default_wm_text
+        wm_text = self._resolve_wm_text(meta["root"], settings)
+        if not wm_text:
+            return before, canvas
+
         anchor = self._choose_anchor(meta, settings, src)
-
         after = add_text_watermark(
             canvas,
-            text=wm_text if wm_text else "",
+            text=wm_text,
             opacity_pct=settings.wm_opacity,
             scale_pct=settings.wm_scale_pct,
             fill_rgb=settings.wm_fill_color,
@@ -114,8 +130,7 @@ class AppController:
             stroke_width=settings.wm_stroke_width,
             anchor_norm=anchor,
             font_path=settings.wm_font_path,
-        ) if wm_text else canvas.copy()
-
+        )
         return before, after
 
     # ---------- 출력 경로 ----------
@@ -164,22 +179,25 @@ class AppController:
 
         # 워커 함수
         def _do(rc: RootConfig, meta: dict, src: Path, w: int, h: int) -> None:
-            wm_text = (rc.wm_text or "").strip() or settings.default_wm_text
+            wm_text = self._resolve_wm_text(rc, settings)
             anchor = self._choose_anchor(meta, settings, src)
             # 리사이즈 베이스(일괄 처리도 동일 경로 → 캐시 활용)
             canvas = self._get_resized_canvas(src, (w, h), settings.bg_color)
-            # 워터마크(빈 문자열이면 생략)
-            out_img = add_text_watermark(
-                canvas,
-                text=wm_text if wm_text else "",
-                opacity_pct=settings.wm_opacity,
-                scale_pct=settings.wm_scale_pct,
-                fill_rgb=settings.wm_fill_color,
-                stroke_rgb=settings.wm_stroke_color,
-                stroke_width=settings.wm_stroke_width,
-                anchor_norm=anchor,
-                font_path=settings.wm_font_path,
-            ) if wm_text else canvas
+            if not wm_text:
+                out_img = canvas
+            else:
+                # ✅ 캐시 공유 이미지 보호: 워터마크 적용 시에만 복사본 생성
+                out_img = add_text_watermark(
+                    canvas.copy(),
+                    text=wm_text,
+                    opacity_pct=settings.wm_opacity,
+                    scale_pct=settings.wm_scale_pct,
+                    fill_rgb=settings.wm_fill_color,
+                    stroke_rgb=settings.wm_stroke_color,
+                    stroke_width=settings.wm_stroke_width,
+                    anchor_norm=anchor,
+                    font_path=settings.wm_font_path,
+                )
             # 저장
             out_dir = self._output_dir_for(src, rc, settings.output_root, meta["post_name"])
             dst = out_dir / f"{src.stem}_wm.jpg"
@@ -215,18 +233,21 @@ class AppController:
 
     # ---------- 단일 이미지 처리(내부) ----------
     def _process_image(
-        self,
-        src: Path,
-        target: Tuple[int, int],
-        settings: AppSettings,
-        wm_text: str,
-        anchor
+            self,
+            src: Path,
+            target: Tuple[int, int],
+            settings: AppSettings,
+            wm_text: str,
+            anchor
     ) -> Image.Image:
-        """(현재는 캐시 경유 경로 사용하므로 미사용일 수 있으나 유지)"""
-        im = load_image(src).convert("RGB")
+        im = load_image(src)  # 이미 RGB Image
+        if not isinstance(im, Image.Image):
+            raise ValueError(f"이미지 로드 실패(타입 불일치): {src}")
+
         canvas = im if tuple(target) == (0, 0) else resize_contain(im, target, settings.bg_color)
-        if not wm_text:
+        if not (wm_text or "").strip():
             return canvas
+
         out = add_text_watermark(
             canvas,
             text=wm_text,
@@ -239,3 +260,4 @@ class AppController:
             font_path=settings.wm_font_path,
         )
         return out
+
