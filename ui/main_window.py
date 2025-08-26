@@ -61,6 +61,40 @@ class MainWindow(BaseTk):
         ttk.Button(tbar, text="게시물 스캔", command=self.on_scan).pack(side="left")
         ttk.Button(tbar, text="미리보기", command=self.on_preview).pack(side="left", padx=6)
 
+    def _on_apply_all(self, anchor):
+        """현재 미리보기 앵커를 이 게시물의 '기본 앵커'로 설정.
+           개별 이미지 앵커(img_anchors)는 건드리지 않음.
+        """
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts:
+            return
+
+        meta = self.posts[key]
+        files = meta.get("files") or []
+        img_map = meta.get("img_anchors") or {}
+
+        # 게시물 기본 앵커만 업데이트 (개별 앵커는 그대로 유지)
+        meta["anchor"] = (float(anchor[0]), float(anchor[1]))
+
+        # 안내: 적용된(=개별 지정 없는) 이미지 수
+        total = len(files)
+        overridden = len(img_map)
+        affected = max(0, total - overridden)
+
+        # 미리보기 갱신
+        self._wm_anchor = meta["anchor"]
+        self.on_preview()
+
+        # 사용자 안내
+        messagebox.showinfo(
+            "모든 이미지에 적용",
+            f"기본 위치를 업데이트했습니다.\n"
+            f"- 총 이미지: {total}\n"
+            f"- 개별 지정 제외: {overridden}\n"
+            f"- 적용 대상: {affected}"
+        )
+
+
     def _build_middle(self, parent):
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
@@ -75,7 +109,7 @@ class MainWindow(BaseTk):
         mid.add(right, weight=4)
 
         pre_frame = ttk.Frame(right)
-        self.preview = PreviewPane(pre_frame, on_anchor_change=self._on_anchor_change)
+        self.preview = PreviewPane(pre_frame, on_anchor_change=self._on_anchor_change, on_apply_all=self._on_apply_all)
         self.preview.pack(fill="both", expand=True)
         right.add(pre_frame, weight=5)
 

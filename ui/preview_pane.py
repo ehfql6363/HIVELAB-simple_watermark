@@ -292,9 +292,12 @@ class _CheckerCanvas(tk.Canvas):
 
 class PreviewPane(ttk.Frame):
     """Before/After + Swap + (그리드/드래그) 위치 지정 + 드래그 유령 워터마크."""
-    def __init__(self, master, on_anchor_change: Callable[[Tuple[float,float]], None] | None = None):
+    def __init__(self, master,
+                 on_anchor_change: Callable[[Tuple[float,float]], None] | None = None,
+                 on_apply_all: Callable[[Tuple[float,float]], None] | None = None):
         super().__init__(master)
         self._on_anchor_change = on_anchor_change
+        self._on_apply_all = on_apply_all
         self._placement_mode = tk.StringVar(value="grid")  # "grid" | "drag"
 
         # 상단 툴바
@@ -309,6 +312,7 @@ class PreviewPane(ttk.Frame):
         ttk.Label(top, text="배치:").pack(side="left", padx=(16,2))
         ttk.Radiobutton(top, text="3×3 그리드", variable=self._placement_mode, value="grid", command=self._on_mode_change).pack(side="left")
         ttk.Radiobutton(top, text="드래그", variable=self._placement_mode, value="drag", command=self._on_mode_change).pack(side="left", padx=(4,0))
+        ttk.Button(top, text="모든 이미지에 적용", command=self._on_apply_all_clicked).pack(side="left", padx=(12, 0))
 
         # 본문
         container = ttk.Frame(self); container.pack(fill="both", expand=True, pady=4)
@@ -338,6 +342,11 @@ class PreviewPane(ttk.Frame):
         self._apply_grid_and_visuals()
 
     # ---- 외부 API ----
+    def _on_apply_all_clicked(self):
+        # 현재 미리보기에서 보이는 앵커 값을 상위(MainWindow)로 전달
+        if callable(self._on_apply_all):
+            self._on_apply_all(self._anchor_norm)
+
     def set_wm_preview_config(self, cfg: Optional[Dict]):
         """After 이미지 기준 유령 워터마크용 설정 전달."""
         # 두 캔버스 모두 같은 설정을 갖지만, 실제로는 After가 보이는 쪽만 사용
