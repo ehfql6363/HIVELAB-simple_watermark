@@ -42,11 +42,11 @@ class PostList(ttk.Frame):
             self.tree.insert("", "end", values=(key, cnt))
 
     def select_key(self, key: str):
-        """키 값으로 행을 선택(스크롤 포함)."""
         for iid in self.tree.get_children():
             if self.tree.set(iid, "key") == key:
                 self.tree.selection_set(iid)
                 self.tree.see(iid)
+                self.event_generate("<<TreeviewSelect>>")
                 break
 
     def get_selected_post(self) -> str | None:

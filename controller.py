@@ -15,6 +15,8 @@ from services.resize import resize_contain
 from services.watermark import add_text_watermark
 from services.writer import save_image  # 고속 저장
 
+IMG_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
+
 class AppController:
     def __init__(self):
         self._processed = 0
@@ -22,19 +24,14 @@ class AppController:
         self._canvas_cache_limit = 64
 
     def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> str:
-        if rc.wm_text is not None and rc.wm_text.strip() == "":
-            return ""  # 명시적 비활성
-        if (rc.wm_text or "").strip():
-            return rc.wm_text.strip()
+        if getattr(rc, "wm_text", None) is not None and str(rc.wm_text).strip() == "":
+            return ""
+        if (getattr(rc, "wm_text", "") or "").strip():
+            return str(rc.wm_text).strip()
         return (settings.default_wm_text or "").strip()
 
     # ---------- 스캔 ----------
     def scan_posts_multi(self, roots: List[RootConfig], loose_images: Optional[List[Path]] = None) -> Dict[str, dict]:
-        """
-        - 루트에 바로 이미지가 있으면 단일 게시물(__SELF__)
-        - 하위 폴더를 게시물로 스캔
-        - loose_images 가 있으면 '이미지'라는 가상 게시물로 묶음
-        """
         posts: Dict[str, dict] = {}
 
         # 1) 루트들 스캔
@@ -57,18 +54,19 @@ class AppController:
                     "post_dir": post_dir,
                 }
 
-        # 2) loose 이미지 → '이미지' 가상 게시물
-        li = [p for p in (loose_images or []) if p.exists() and p.is_file() and p.suffix.lower() in IMG_EXTS]
-        if li:
-            # 가상 루트: 기본 워터마크 규칙을 쓰도록 DEFAULT_WM_TEXT 넣어둠
-            vroot = RootConfig(path=Path("[IMAGES]"), wm_text=DEFAULT_WM_TEXT)
-            posts["이미지"] = {
-                "root": vroot,
-                "post_name": "이미지",
-                "files": li,
-                "post_dir": Path(""),   # 의미 없음
-                "is_loose": True,       # ✅ 출력 경로 처리용 플래그
-            }
+        # 2) 느슨한(폴더 밖) 이미지 → '이미지' 가상 게시물
+        if loose_images:
+            valid = [p for p in loose_images if p.exists() and p.is_file() and p.suffix.lower() in IMG_EXTS]
+            valid = sorted(set(valid), key=lambda p: (p.parent, p.name.lower()))
+            if valid:
+                # wm_text=None → 기본값 사용, ""이면 비활성화가 되니 None 추천
+                posts["이미지"] = {
+                    "root": RootConfig(path=Path("__LOOSE__"), wm_text=None),
+                    "post_name": "이미지",
+                    "files": valid,
+                    "post_dir": Path("."),   # 의미 없음 (저장은 out_root 바로 아래)
+                    "is_loose": True,
+                }
 
         return posts
 
@@ -142,13 +140,13 @@ class AppController:
         return before, after
 
     # ---------- 출력 경로 ----------
-    def _output_dir_for(self, src: Path, rc: RootConfig, out_root: Path, post_name: str, is_loose: bool = False) -> Path:
-        """
-        일반: out_root / rc.path.name / (src.parent relative to rc.path)
-        느슨한 이미지(is_loose=True): out_root (바로 저장)
-        """
-        if is_loose:
-            return out_root
+    def _output_dir_for(self, src: Path, rc: RootConfig, out_root: Path, post_name: str) -> Path:
+        # ✅ 느슨한 이미지는 out_root 바로 아래에 저장
+        try:
+            if rc.path.name == "__LOOSE__":
+                return out_root
+        except Exception:
+            pass
 
         base = out_root / rc.path.name
         try:

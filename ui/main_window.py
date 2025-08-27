@@ -207,23 +207,37 @@ class MainWindow(BaseTk):
 
     def on_scan(self):
         roots = self.opt.get_roots()
-        loose = self.opt.get_loose_images()          # ✅ 개별 이미지
+        loose = []
+        if hasattr(self.opt, "get_loose_images"):
+            try:
+                loose = self.opt.get_loose_images() or []
+            except Exception:
+                loose = []
+
         if not roots and not loose:
-            messagebox.showinfo("대상 없음", "루트를 추가하거나 이미지를 드래그해 주세요.")
+            messagebox.showinfo("대상 없음", "루트를 추가하거나 이미지 파일을 드래그&드롭하세요.")
             return
 
-        self.posts = self.controller.scan_posts_multi(roots, loose_images=loose)
+        # 컨트롤러가 loose 이미지를 함께 받도록 호출
+        try:
+            self.posts = self.controller.scan_posts_multi(roots, loose_images=loose)
+        except TypeError:
+            # (구버전 안전장치) loose 미지원이면 루트만 스캔
+            self.posts = self.controller.scan_posts_multi(roots)
+
         self.post_list.set_posts(self.posts)
 
-        # 새 스캔 → 갤러리/선택 초기화
+        # 초기화
         self._active_src = None
         self.gallery.clear()
         self.gallery.update_anchor_overlay((0.5, 0.5), {})
 
-        # ✅ loose 이미지가 있으면 '이미지' 게시물을 자동 선택
-        if "이미지" in self.posts:
-            self.post_list.select_key("이미지")   # 선택 표시
-            self.on_select_post("이미지")         # 실제 로드
+        # ✅ '이미지' 가상 게시물 자동 선택 (있으면)
+        prefer = "이미지" if "이미지" in self.posts else (next(iter(self.posts.keys()), None))
+        if prefer:
+            if hasattr(self.post_list, "select_key"):
+                self.post_list.select_key(prefer)
+            self.on_select_post(prefer)
 
     def on_select_post(self, key: str | None):
         self._active_src = None

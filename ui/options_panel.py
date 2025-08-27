@@ -7,6 +7,8 @@ from pathlib import Path
 from settings import DEFAULT_SIZES, DEFAULT_WM_TEXT, RootConfig
 from services.discovery import IMG_EXTS  # ✅ 이미지 확장자 활용
 
+IMG_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
+
 # DnD
 try:
     from tkinterdnd2 import DND_FILES  # type: ignore
@@ -22,15 +24,13 @@ def _make_swatch(parent, hex_color: str):
     return sw
 
 class OptionsPanel(ttk.Frame):
-    """옵션 패널 (크기/색/폰트/루트 목록) + 파일 다이얼로그 최근 폴더 기억
-       ※ 저장 위치는 항상 '각 게시물 폴더'로 고정
-    """
+    """옵션 패널 + (폴더 루트 / 드롭한 이미지) 관리"""
     def __init__(self, master, on_change: Optional[Callable[[], None]] = None):
         super().__init__(master)
         self._on_change = on_change
         self._recent_root_dir: Optional[Path] = None
         self._recent_font_dir: Optional[Path] = None
-        self._loose_images: list[Path] = []          # ✅ 개별 추가된 이미지 모음(드롭)
+        self._loose_images: list[Path] = []      # ✅ 드롭된 개별 이미지들
 
         # 상단: 저장 위치 안내 + 타겟 크기(단일)
         top = ttk.Frame(self); top.pack(fill="x")
@@ -93,20 +93,35 @@ class OptionsPanel(ttk.Frame):
         ttk.Button(wm, text="지우기", command=self._clear_font).grid(row=2, column=7, sticky="w", pady=(4,4))
 
         # 루트 목록
-        roots = ttk.LabelFrame(self, text="루트 목록 (루트별 워터마크 텍스트) — 이미지 파일은 창에 드래그해도 됩니다.")
-        roots.pack(fill="both", expand=True, pady=8)
+        roots = ttk.LabelFrame(self, text="루트 목록 (루트별 워터마크 텍스트)  /  이미지 파일은 드래그&드롭으로 추가 가능")
+        roots.pack(fill="both", expand=True, pady=(8, 4))
 
         cols = ("root", "wm_text")
         self.tree = ttk.Treeview(roots, columns=cols, show="headings", height=6)
         self.tree.heading("root", text="루트 경로")
         self.tree.heading("wm_text", text="워터마크 텍스트(더블 클릭 편집)")
-        self.tree.column("root", width=520); self.tree.column("wm_text", width=260)
-        self.tree.pack(side="left", fill="both", expand=True, padx=(6,0), pady=6)
+        self.tree.column("root", width=520);
+        self.tree.column("wm_text", width=260)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
 
         scrollbar = ttk.Scrollbar(roots, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=scrollbar.set); scrollbar.pack(side="right", fill="y")
+        self.tree.configure(yscroll=scrollbar.set);
+        scrollbar.pack(side="right", fill="y")
 
-        # DnD
+        # ---------- 드롭한 이미지 표기 ----------
+        loose = ttk.Frame(self);
+        loose.pack(fill="x", pady=(0, 6))
+        self._loose_label = ttk.Label(loose, text="드롭한 이미지: 0장", foreground="#444")
+        self._loose_label.pack(side="left", padx=(6, 0))
+        ttk.Button(loose, text="지우기", command=self._clear_loose_images).pack(side="left", padx=8)
+
+        btns = ttk.Frame(self)
+        btns.pack(fill="x", pady=(0, 6))
+        ttk.Button(btns, text="루트 추가…", command=self._add_root).pack(side="left")
+        ttk.Button(btns, text="삭제", command=self._remove_root).pack(side="left", padx=6)
+        ttk.Button(btns, text="모두 삭제", command=self._remove_all).pack(side="left")
+
+        # DnD: 트리/최상위에 등록
         if DND_AVAILABLE:
             try:
                 self.tree.drop_target_register(DND_FILES)  # type: ignore
@@ -114,19 +129,14 @@ class OptionsPanel(ttk.Frame):
             except Exception:
                 pass
             try:
-                top = self.winfo_toplevel()
-                top.drop_target_register(DND_FILES)  # type: ignore
-                top.dnd_bind("<<Drop>>", self._on_drop)
+                topwin = self.winfo_toplevel()
+                topwin.drop_target_register(DND_FILES)  # type: ignore
+                topwin.dnd_bind("<<Drop>>", self._on_drop)
             except Exception:
                 pass
 
         self.tree.bind("<Double-1>", self._on_tree_double_click)
         self.tree.bind("<Delete>", lambda e: self._remove_root())
-
-        btns = ttk.Frame(self); btns.pack(fill="x", pady=(0,6))
-        ttk.Button(btns, text="루트 추가…", command=self._add_root).pack(side="left")
-        ttk.Button(btns, text="삭제", command=self._remove_root).pack(side="left", padx=6)
-        ttk.Button(btns, text="모두 삭제", command=self._remove_all).pack(side="left")
 
         # 스와치 동기
         self.var_bg.trace_add("write", lambda *_: self._update_swatch(self.sw_bg, self.var_bg.get()))
@@ -142,9 +152,9 @@ class OptionsPanel(ttk.Frame):
         except Exception:
             return ""
 
-    def get_loose_images(self) -> list[Path]:
-        """드롭 등으로 모은 개별 이미지 목록 반환."""
-        return list(dict.fromkeys(self._loose_images))  # 중복 제거 순서 유지
+    def get_loose_images(self) -> List[Path]:
+        """드롭한 개별 이미지 목록을 반환 (복사본)."""
+        return list(self._loose_images)
 
     def get_roots(self) -> List[RootConfig]:
         roots: List[RootConfig] = []
@@ -275,24 +285,46 @@ class OptionsPanel(ttk.Frame):
 
     # ---------- DnD ----------
     def _on_drop(self, event):
-        # event.data: '{path1} {path2} ...'
-        try: paths = self.tk.splitlist(event.data)
-        except Exception: paths = [event.data]
-        added = False
+        try:
+            paths = self.tk.splitlist(event.data)
+        except Exception:
+            paths = [event.data]
+
+        changed = False
         for p in paths:
-            p = (p or "").strip().strip("{}")
-            if not p: continue
+            p = (p or "").strip()
+            if not p:
+                continue
             path = Path(p)
+
             if path.is_dir():
+                # 폴더는 루트에 추가
                 self._insert_or_update_root(str(path), DEFAULT_WM_TEXT)
                 try: self._recent_root_dir = path
                 except: pass
-                added = True
+                changed = True
             elif path.is_file() and path.suffix.lower() in IMG_EXTS:
-                # ✅ 개별 이미지 수집
-                self._loose_images.append(path)
-                added = True
-        if added:
+                # ✅ 이미지 파일은 개별 이미지 목록에 저장
+                try:
+                    if path not in self._loose_images:
+                        self._loose_images.append(path)
+                        changed = True
+                except Exception:
+                    pass
+            # 그 외 파일은 무시
+
+        if changed:
+            self._update_loose_label()
+            self._notify_change()
+
+    def _update_loose_label(self):
+        cnt = len(self._loose_images)
+        self._loose_label.configure(text=f"드롭한 이미지: {cnt}장")
+
+    def _clear_loose_images(self):
+        if self._loose_images:
+            self._loose_images.clear()
+            self._update_loose_label()
             self._notify_change()
 
     # ---------- Inline edit ----------
