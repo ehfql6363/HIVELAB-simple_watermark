@@ -239,9 +239,8 @@ class OptionsPanel(ttk.Frame):
         self._recent_root_dir = settings.last_dir_output_dialog
         self._recent_font_dir = settings.last_dir_font_dialog
 
-        # 출력 루트 초기값
         try:
-            self.var_output.set(str(settings.output_root) if settings.output_root else "")
+            self.var_font.set(str(settings.wm_font_path) if settings.wm_font_path else "")
         except Exception:
             pass
 

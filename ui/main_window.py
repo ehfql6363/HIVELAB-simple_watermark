@@ -45,6 +45,13 @@ class MainWindow(BaseTk):
         self.status.pack(side="bottom", fill="x", padx=8, pady=8)
 
         self.opt.set_initial_options(self.app_settings)
+
+        if self.app_settings.output_root and not self.opt.var_output.get().strip():
+            self.opt.var_output.set(str(self.app_settings.output_root))
+
+        if self.app_settings.wm_font_path and not self.opt.var_font.get().strip():
+            self.opt.var_font.set(str(self.app_settings.wm_font_path))
+
         self._on_options_changed()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -192,8 +199,21 @@ class MainWindow(BaseTk):
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, _roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
+
+        # ✅ 출력 루트 폴백: 입력칸이 비어 있으면 저장돼 있던 경로 사용
+        if not out_root_str and self.app_settings.output_root:
+            out_root = self.app_settings.output_root
+        else:
+            out_root = Path(out_root_str) if out_root_str else Path("")
+
+        # ✅ 폰트 폴백(이미 적용한 것과 동일)
+        if not wm_font_path_str and self.app_settings.wm_font_path:
+            wm_font_path = self.app_settings.wm_font_path
+        else:
+            wm_font_path = Path(wm_font_path_str) if wm_font_path_str else None
+
         return AppSettings(
-            output_root=Path(out_root_str) if out_root_str else Path(""),
+            output_root=out_root,
             sizes=sizes,
             bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
             wm_opacity=int(wm_opacity),
@@ -203,7 +223,7 @@ class MainWindow(BaseTk):
             wm_stroke_color=hex_to_rgb(wm_stroke_hex or "#FFFFFF"),
             wm_stroke_width=int(wm_stroke_w),
             wm_anchor=self.app_settings.wm_anchor,
-            wm_font_path=Path(wm_font_path_str) if wm_font_path_str else None,
+            wm_font_path=wm_font_path,
         )
 
     def on_scan(self):
@@ -252,12 +272,10 @@ class MainWindow(BaseTk):
         settings = self._collect_settings()
         meta = self.posts[key]
 
-        # 루트 텍스트 규칙 적용 (빈 문자열이면 비활성화)
         _raw = meta["root"].wm_text
         _root_txt = ("" if _raw is None else _raw.strip())
         wm_text = "" if _root_txt == "" else (_root_txt or settings.default_wm_text)
 
-        # 유령 워터마크 미리보기 설정
         wm_cfg = None
         if wm_text:
             wm_cfg = {
@@ -320,7 +338,10 @@ class MainWindow(BaseTk):
             messagebox.showinfo("시작", "스캔된 게시물이 없습니다.")
             return
 
-        out_root_str = self.opt.get_output_root_str()
+        out_root_str = (self.opt.get_output_root_str() or "").strip()
+        # ✅ 폴백: 입력칸이 비어 있어도 저장값이 있으면 사용
+        if not out_root_str and self.app_settings.output_root:
+            out_root_str = str(self.app_settings.output_root)
         if not out_root_str:
             messagebox.showinfo("출력 폴더", "출력 루트 폴더를 먼저 지정하세요.")
             return

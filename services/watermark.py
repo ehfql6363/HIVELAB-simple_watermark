@@ -45,8 +45,10 @@ def add_text_watermark(canvas, text, opacity_pct, scale_pct, fill_rgb, stroke_rg
     if not text or not str(text).strip():
         return canvas
 
+    font_path_str = str(font_path) if font_path else ""
+
     sprite = get_wm_sprite(
-        text, scale_pct, opacity_pct, fill_rgb, stroke_rgb, stroke_width, font_path, canvas.size
+        text, scale_pct, opacity_pct, fill_rgb, stroke_rgb, stroke_width, font_path_str, canvas.size
     )
 
     cx = int(anchor_norm[0] * canvas.width)
