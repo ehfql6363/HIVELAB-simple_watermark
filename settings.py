@@ -11,6 +11,7 @@ DEFAULT_WM_TEXT = "워터마크"
 DEFAULT_WM_FILL = (0, 0, 0)
 DEFAULT_WM_STROKE = (255, 255, 255)
 DEFAULT_WM_STROKE_W = 2
+IMAGES_VROOT = "__IMAGES__"   # 가상 루트 키(드롭 파일 전용)
 
 CONFIG_PATH = Path.home() / ".post_wm_tool.json"
 
