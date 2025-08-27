@@ -245,12 +245,13 @@ class _CheckerCanvas(tk.Canvas):
             return
 
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
-        if iw <= 1 or ih <= 1: return
+        if iw <= 1 or ih <= 1:
+            return
 
         op = int(self._wm_cfg.get("opacity", 30))
         scale_pct = int(self._wm_cfg.get("scale_pct", 5))
-        fill = tuple(self._wm_cfg.get("fill", (0,0,0)))
-        stroke = tuple(self._wm_cfg.get("stroke", (255,255,255)))
+        fill = tuple(self._wm_cfg.get("fill", (0, 0, 0)))
+        stroke = tuple(self._wm_cfg.get("stroke", (255, 255, 255)))
         sw = int(self._wm_cfg.get("stroke_w", 2))
         font_path = self._wm_cfg.get("font_path") or None
 
@@ -262,16 +263,25 @@ class _CheckerCanvas(tk.Canvas):
         if key == self._wm_sprite_key and self._wm_sprite_tk is not None:
             return
 
-        font = _pick_font(_fit_font_by_width(txt, target_w, stroke_width=sw, font_path=font_path),
-                          font_path=font_path)
-        tw, th = _measure_text(font, txt, stroke_width=sw)
+        # --- 여기부터 변경: bbox + 오프셋 사용 ---
+        font_size = _fit_font_by_width(txt, target_w, stroke_width=sw, font_path=font_path)
+        font = _pick_font(font_size, font_path=font_path)
+
+        tmp = Image.new("L", (8, 8))
+        d = ImageDraw.Draw(tmp)
+        l, t, r, b = d.textbbox((0, 0), txt, font=font, stroke_width=max(0, sw))
+        tw, th = max(1, r - l), max(1, b - t)
+
         alpha = int(255 * (op / 100.0))
         fill_rgba = (fill[0], fill[1], fill[2], alpha)
         stroke_rgba = (stroke[0], stroke[1], stroke[2], alpha)
 
-        over = Image.new("RGBA", (max(1, tw), max(1, th)), (0,0,0,0))
-        d = ImageDraw.Draw(over)
-        d.text((0, 0), txt, font=font, fill=fill_rgba, stroke_width=max(0, sw), stroke_fill=stroke_rgba)
+        over = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        d2 = ImageDraw.Draw(over)
+        # 오프셋(-l, -t)로 그리기: 글꼴 어센트/디센트로 인한 잘림 방지
+        d2.text((-l, -t), txt, font=font, fill=fill_rgba,
+                stroke_width=max(0, sw), stroke_fill=stroke_rgba)
+        # --- 변경 끝 ---
 
         tkimg = ImageTk.PhotoImage(over)
         self._wm_sprite_tk = tkimg

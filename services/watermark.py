@@ -95,26 +95,30 @@ def make_overlay_sprite(
 
     # 이진탐색으로 폰트 크기 맞추기
     lo, hi, best = 8, 512, 8
+    tmp = Image.new("L", (8, 8))
+    d = ImageDraw.Draw(tmp)
     while lo <= hi:
         mid = (lo + hi) // 2
         font = _get_font(font_path, mid)
-        d = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-        w, h = d.textbbox((0,0), text, font=font, stroke_width=max(0, stroke_width))[2:]
+        l, t, r, b = d.textbbox((0, 0), text, font=font, stroke_width=max(0, stroke_width))
+        w = r - l
         if w <= target_w:
-            best = mid; lo = mid + 1
+            best = mid
+            lo = mid + 1
         else:
             hi = mid - 1
 
     font = _get_font(font_path, best)
-    d = ImageDraw.Draw(Image.new("RGB", (8, 8)))
-    tw, th = d.textbbox((0,0), text, font=font, stroke_width=max(0, stroke_width))[2:]
+    l, t, r, b = d.textbbox((0, 0), text, font=font, stroke_width=max(0, stroke_width))
+    tw, th = max(1, r - l), max(1, b - t)
 
     alpha = int(255 * (opacity_pct / 100.0))
-    over = Image.new("RGBA", (tw, th), (0,0,0,0))
-    d = ImageDraw.Draw(over)
-    d.text((0,0), text, font=font, fill=(*fill_rgb, alpha),
-           stroke_width=max(0, stroke_width), stroke_fill=(*stroke_rgb, alpha))
+    over = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+    d2 = ImageDraw.Draw(over)
+    d2.text((-l, -t), text, font=font, fill=(*fill_rgb, alpha),
+            stroke_width=max(0, stroke_width), stroke_fill=(*stroke_rgb, alpha))
     return over
+
 
 def paste_overlay(canvas: Image.Image, overlay: "Image.Image", anchor_norm: tuple[float,float]) -> Image.Image:
     x = int(anchor_norm[0] * canvas.width  - overlay.width  / 2)
@@ -136,27 +140,34 @@ def _sprite_key(text, scale_pct, opacity, fill, stroke, stroke_w, font_path_str,
 
 def _make_sprite(text, scale_pct, opacity, fill, stroke, stroke_w, font_path, short_side):
     # 텍스트 폭이 짧은 변 * scale_pct% 에 맞도록 폰트 찾기(이진 탐색)
-    target_w = max(1, int(short_side * (scale_pct/100.0)))
+    target_w = max(1, int(short_side * (scale_pct / 100.0)))
     lo, hi, best = 6, 512, 12
-    d = ImageDraw.Draw(Image.new("L", (4,4)))
+    tmp = Image.new("L", (4, 4))
+    d = ImageDraw.Draw(tmp)
     while lo <= hi:
-        mid = (lo+hi)//2
+        mid = (lo + hi) // 2
         f = _pick_font(font_path, mid)
-        w,_ = _measure(d, text, f, stroke_w)
+        l, t, r, b = d.textbbox((0, 0), text, font=f, stroke_width=max(0, stroke_w))
+        w = r - l
         if w <= target_w:
-            best = mid; lo = mid+1
+            best = mid
+            lo = mid + 1
         else:
-            hi = mid-1
+            hi = mid - 1
+
     f = _pick_font(font_path, best)
-    w,h = _measure(d, text, f, stroke_w)
-    sprite = Image.new("RGBA", (max(1,w), max(1,h)), (0,0,0,0))
+    l, t, r, b = d.textbbox((0, 0), text, font=f, stroke_width=max(0, stroke_w))
+    w, h = max(1, r - l), max(1, b - t)
+    sprite = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(sprite)
-    a = int(255 * (opacity/100.0))
-    draw.text((0,0), text, font=f,
+    a = int(255 * (opacity / 100.0))
+    # 오프셋(-l, -t) 보정해서 그리기
+    draw.text((-l, -t), text, font=f,
               fill=(fill[0], fill[1], fill[2], a),
               stroke_width=max(0, stroke_w),
               stroke_fill=(stroke[0], stroke[1], stroke[2], a))
     return sprite
+
 
 def get_wm_sprite(text, scale_pct, opacity, fill, stroke, stroke_w, font_path, canvas_size):
     short_side = min(canvas_size)
