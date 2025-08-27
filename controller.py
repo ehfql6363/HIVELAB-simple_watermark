@@ -230,8 +230,25 @@ class AppController:
                     font_path=settings.wm_font_path,
                 )
             )
-            out_dir = self._flat_output_dir(settings.output_root)
+
+            # 저장 경로 결정
+            if str(rc.path) == IMAGES_VROOT:
+                # ✅ 드롭한 '이미지' 가상 루트: 출력 루트에 플랫 저장
+                out_dir = settings.output_root
+            else:
+                # ✅ 폴더에서 온 항목: 계정/게시물 구조 보존
+                out_dir = self._output_dir_for(src, rc, settings.output_root, meta["post_name"])
+
+            # 디렉터리 보장
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            # 파일명: 크기 태그(0,0이면 생략) + _wm.jpg
             fname = self._filename_for(src, w, h)
+
+            # 이름 충돌 방지(특히 플랫 저장 시 중요)
             dst = self._unique_path(out_dir, fname)
 
             save_image(
