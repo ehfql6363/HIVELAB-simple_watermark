@@ -47,7 +47,7 @@ def _draw_badge(square_img: Image.Image, text="•", bg=(76,175,80), fg=(255,255
 
 class ThumbGallery(ttk.Frame):
     """썸네일 그리드(스크롤 가능) + 앵커 오버레이/배지.
-       - 클릭 한 번으로 on_activate 호출
+       - 클릭 한 번으로 on_activate 호출 (전역 클릭 캐처 + 포인터 가드)
        - 갤러리/썸네일 어디 위든 휠 스크롤 동작(전역 바인딩 + 포인터 가드)
     """
     def __init__(self, master, on_activate: Optional[Callable[[Path], None]] = None,
@@ -72,6 +72,8 @@ class ThumbGallery(ttk.Frame):
 
         # ✅ 전역 휠 바인딩: 항상 켜둠(포인터 가드로 범위 제한)
         self._install_global_wheel()
+        # ✅ 전역 클릭 캐처: 항상 켜둠(포인터 가드로 범위 제한)
+        self._install_global_click()
 
         # state
         self._tiles: Dict[Path, tk.Frame] = {}
@@ -81,6 +83,9 @@ class ThumbGallery(ttk.Frame):
         self._default_anchor: Tuple[float, float] = (0.5, 0.5)
         self._img_anchor_map: Dict[Path, Tuple[float, float]] = {}
 
+        # 클릭 타겟 역추적용: widget-id -> path
+        self._widget_to_path: Dict[int, Path] = {}
+
     # ---------- public API ----------
 
     def clear(self):
@@ -88,6 +93,7 @@ class ThumbGallery(ttk.Frame):
             w.destroy()
         self._tiles.clear()
         self._imgs.clear()
+        self._widget_to_path.clear()
         self._active = None
         self._update_scroll()
 
@@ -115,13 +121,9 @@ class ThumbGallery(ttk.Frame):
             lbl_txt = tk.Label(tile, text=p.name, wraplength=size, justify="center")
             lbl_txt.pack(padx=4, pady=(2, 6))
 
-            def _activate(_=None, path=p):
-                self.set_active(path)
-                if callable(self.on_activate):
-                    self.on_activate(path)
-            # ✅ 단일 클릭 활성화(타일/이미지/텍스트 모두)
+            # ✅ 클릭 역추적용 매핑(타일/이미지/텍스트 모두)
             for w in (tile, lbl_img, lbl_txt):
-                w.bind("<Button-1>", _activate)
+                self._widget_to_path[id(w)] = p
 
             self._tiles[p] = tile
 
@@ -208,7 +210,6 @@ class ThumbGallery(ttk.Frame):
     def _on_wheel(self, e):
         if not self._pointer_inside_me(e):
             return
-        # delta를 단위 스텝으로 변환(트랙패드 연속 스크롤 대응)
         delta = e.delta
         steps = int(abs(delta) / 120) if abs(delta) >= 120 else 1
         direction = -1 if delta > 0 else 1
@@ -226,3 +227,27 @@ class ThumbGallery(ttk.Frame):
             return
         self.canvas.yview_scroll(+3, "units")
         return "break"
+
+    # ---------- click handling (always-on bind_all + pointer guard) ----------
+
+    def _install_global_click(self):
+        root = self.winfo_toplevel()
+        root.bind_all("<Button-1>", self._on_any_click, add="+")
+        # (드래그가 섞여도 한 번은 확실히 타도록 릴리즈도 보조)
+        root.bind_all("<ButtonRelease-1>", self._on_any_click, add="+")
+
+    def _on_any_click(self, e):
+        if not self._pointer_inside_me(e):
+            return
+        # 포인터 아래 위젯에서 타일/라벨을 거슬러 올라가며 path를 찾음
+        w = self.winfo_containing(e.x_root, e.y_root)
+        while w is not None:
+            path = self._widget_to_path.get(id(w))
+            if path is not None:
+                if path != self._active:
+                    self.set_active(path)
+                if callable(self.on_activate):
+                    # 같은 이벤트 루프 끝으로 미뤄 경합 방지
+                    self.after_idle(lambda p=path: self.on_activate(p))
+                return "break"
+            w = w.master

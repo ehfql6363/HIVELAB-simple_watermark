@@ -260,7 +260,11 @@ class MainWindow(BaseTk):
     def _on_activate_image(self, path: Path):
         self._active_src = path
         self.gallery.set_active(path)
-        self.on_preview()
+        # ✅ idle로 미리보기 스케줄링 (이벤트 경합 방지)
+        try:
+            self.after_idle(self.on_preview)
+        except Exception:
+            self.on_preview()
 
     def on_preview(self):
         key = self.post_list.get_selected_post()
