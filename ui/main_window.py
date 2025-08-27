@@ -31,26 +31,20 @@ class MainWindow(BaseTk):
         self.controller = controller
         self.posts: Dict[str, dict] = {}
 
-        # 설정 로드(앵커는 세션 한정)
         self.app_settings = AppSettings.load()
-        self._wm_anchor = tuple(self.app_settings.wm_anchor)  # 기본 앵커
-        self._active_src: Optional[Path] = None  # 현재 편집 중(없으면 게시물 기본)
+        self._wm_anchor = tuple(self.app_settings.wm_anchor)
+        self._active_src: Optional[Path] = None
 
-        # 1) 헤더(옵션+툴바)만 스크롤 가능
         self.header = ScrollFrame(self, height=300)
         self.header.pack(side="top", fill="x", padx=8, pady=(6, 0))
         self._build_header(self.header.inner)
 
-        # 2) 가운데 PanedWindow는 스크롤 밖 (부모: self)
         self._build_middle(self)
 
-        # 3) 상태바는 그대로
         self.status = StatusBar(self, on_start=self.on_start_batch)
         self.status.pack(side="bottom", fill="x", padx=8, pady=8)
 
-        # UI 초기값 주입
         self.opt.set_initial_options(self.app_settings)
-
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_header(self, parent):
@@ -63,10 +57,6 @@ class MainWindow(BaseTk):
         ttk.Button(tbar, text="미리보기", command=self.on_preview).pack(side="left", padx=6)
 
     def _on_apply_all(self, anchor):
-        """현재 미리보기 위치를 '기본 앵커'로 적용.
-        - 개별 앵커는 유지하되,
-        - ✅ 현재 활성 이미지(self._active_src)는 **포함**: 개별 앵커가 있으면 제거하여 기본을 따르게 함.
-        """
         key = self.post_list.get_selected_post()
         if not key or key not in self.posts:
             return
@@ -75,10 +65,8 @@ class MainWindow(BaseTk):
         files = meta.get("files") or []
         img_map = meta.get("img_anchors") or {}
 
-        # 기본 앵커 갱신
         meta["anchor"] = (float(anchor[0]), float(anchor[1]))
 
-        # ✅ 현재 활성 이미지는 개별 앵커 제거(기본을 따르게)
         if self._active_src and self._active_src in img_map:
             try:
                 del img_map[self._active_src]
@@ -87,16 +75,13 @@ class MainWindow(BaseTk):
             if not img_map:
                 meta["img_anchors"] = {}
 
-        # 썸네일 오버레이 갱신
         self._refresh_gallery_overlay(key)
-
-        # 미리보기 갱신
         self._wm_anchor = meta["anchor"]
         self.on_preview()
 
         total = len(files)
         overridden = len(img_map)
-        affected = max(0, total - overridden)  # 현재 이미지 포함(개별 제거됨)
+        affected = max(0, total - overridden)
         messagebox.showinfo(
             "모든 이미지에 적용",
             f"기본 위치를 업데이트했습니다.\n"
@@ -110,15 +95,12 @@ class MainWindow(BaseTk):
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
 
-        # 좌: 게시물 리스트(자체 스크롤)
         self.post_list = PostList(mid, on_select=self.on_select_post)
         mid.add(self.post_list, weight=1)
 
-        # 우: 세로 PanedWindow (미리보기/갤러리)
         right = ttk.PanedWindow(mid, orient=tk.VERTICAL)
         mid.add(right, weight=4)
 
-        # 미리보기
         pre_frame = ttk.Frame(right)
         self.preview = PreviewPane(
             pre_frame,
@@ -129,7 +111,6 @@ class MainWindow(BaseTk):
         self.preview.pack(fill="both", expand=True)
         right.add(pre_frame, weight=5)
 
-        # 썸네일 갤러리
         gal_frame = ttk.Frame(right)
         gal_frame.pack_propagate(False)
         self.gallery = ThumbGallery(
@@ -140,7 +121,6 @@ class MainWindow(BaseTk):
         self.gallery.pack(fill="x", expand=False)
         right.add(gal_frame, weight=1)
 
-        # sash 최소 높이(디바운스)
         MIN_PREVIEW, MIN_GALLERY = 360, 140
         self._sash_job = None
 
@@ -148,11 +128,9 @@ class MainWindow(BaseTk):
             self._sash_job = None
             try:
                 total = right.winfo_height()
-                if total <= 0:
-                    return
+                if total <= 0: return
                 pos = right.sashpos(0)
-                if pos < MIN_PREVIEW:
-                    pos = MIN_PREVIEW
+                if pos < MIN_PREVIEW: pos = MIN_PREVIEW
                 if (total - pos) < MIN_GALLERY:
                     pos = max(total - MIN_GALLERY, MIN_PREVIEW)
                 if pos != right.sashpos(0):
@@ -170,14 +148,13 @@ class MainWindow(BaseTk):
 
     # ---- 콜백/로직 ----
     def _on_options_changed(self):
-        # UI 즉시 저장(사이즈/색/폰트 등) — 출력 폴더는 컨트롤러에서 자동 결정
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
         recent_out, recent_font = self.opt.get_recent_dirs()
 
         s = self.app_settings
         s.output_root = Path(out_root_str) if out_root_str else s.output_root
-        s.sizes = sizes if sizes else list(DEFAULT_SIZES)
+        s.sizes = sizes
         s.bg_color = hex_to_rgb(bg_hex or "#FFFFFF")
         s.wm_opacity = int(wm_opacity)
         s.wm_scale_pct = int(wm_scale)
@@ -199,14 +176,12 @@ class MainWindow(BaseTk):
         if not key or key not in self.posts or not self._active_src:
             messagebox.showinfo("개별 지정 해제", "해제할 이미지를 먼저 선택하세요.")
             return
-
         meta = self.posts[key]
         img_map = meta.get("img_anchors") or {}
         if self._active_src in img_map:
             del img_map[self._active_src]
             if not img_map:
                 meta["img_anchors"] = {}
-            # 썸네일 오버레이 갱신 + 미리보기 새로고침
             self._refresh_gallery_overlay(key)
             self.on_preview()
             messagebox.showinfo("개별 지정 해제", "현재 이미지가 게시물 기본 위치를 따르도록 복구되었습니다.")
@@ -216,10 +191,9 @@ class MainWindow(BaseTk):
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, _roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
-
         return AppSettings(
             output_root=Path(out_root_str) if out_root_str else Path(""),
-            sizes=sizes if sizes else list(DEFAULT_SIZES),
+            sizes=sizes,
             bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
             wm_opacity=int(wm_opacity),
             wm_scale_pct=int(wm_scale),
@@ -233,25 +207,31 @@ class MainWindow(BaseTk):
 
     def on_scan(self):
         roots = self.opt.get_roots()
-        if not roots:
-            messagebox.showinfo("루트 폴더", "먼저 루트 폴더를 추가하세요.")
+        loose = self.opt.get_loose_images()          # ✅ 개별 이미지
+        if not roots and not loose:
+            messagebox.showinfo("대상 없음", "루트를 추가하거나 이미지를 드래그해 주세요.")
             return
-        self.posts = self.controller.scan_posts_multi(roots)
+
+        self.posts = self.controller.scan_posts_multi(roots, loose_images=loose)
         self.post_list.set_posts(self.posts)
+
         # 새 스캔 → 갤러리/선택 초기화
         self._active_src = None
         self.gallery.clear()
         self.gallery.update_anchor_overlay((0.5, 0.5), {})
 
+        # ✅ loose 이미지가 있으면 '이미지' 게시물을 자동 선택
+        if "이미지" in self.posts:
+            self.post_list.select_key("이미지")   # 선택 표시
+            self.on_select_post("이미지")         # 실제 로드
+
     def on_select_post(self, key: str | None):
         self._active_src = None
-
         if key and key in self.posts:
             meta = self.posts[key]
             files = meta.get("files", [])
             default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
             img_map = meta.get("img_anchors") or {}
-            # 파일 + 썸네일 오버레이
             self.gallery.set_files(files, default_anchor=default_anchor, img_anchor_map=img_map)
             self.gallery.set_active(None)
             self._wm_anchor = default_anchor
@@ -260,11 +240,7 @@ class MainWindow(BaseTk):
     def _on_activate_image(self, path: Path):
         self._active_src = path
         self.gallery.set_active(path)
-        # ✅ idle로 미리보기 스케줄링 (이벤트 경합 방지)
-        try:
-            self.after_idle(self.on_preview)
-        except Exception:
-            self.on_preview()
+        self.on_preview()
 
     def on_preview(self):
         key = self.post_list.get_selected_post()
@@ -279,12 +255,12 @@ class MainWindow(BaseTk):
         meta = self.posts[key]
 
         # 루트 텍스트 규칙 적용 (빈 문자열이면 비활성화)
-        # raw = getattr(meta["root"], "wm_text", None)
         _raw = meta["root"].wm_text
         _root_txt = ("" if _raw is None else _raw.strip())
         wm_text = "" if _root_txt == "" else (_root_txt or settings.default_wm_text)
 
-        # 유령 워터마크 프리뷰 설정 전달: 비활성화면 None 전달(유령 숨김)
+        # 유령 워터마크 미리보기 설정
+        wm_cfg = None
         if wm_text:
             wm_cfg = {
                 "text": wm_text,
@@ -295,11 +271,8 @@ class MainWindow(BaseTk):
                 "stroke_w": settings.wm_stroke_width,
                 "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
             }
-        else:
-            wm_cfg = None
         self.preview.set_wm_preview_config(wm_cfg)
 
-        # 이 미리보기에서 사용할 앵커: 이미지 > 게시물 > 기본
         img_anchor_map = meta.get("img_anchors") or {}
         if self._active_src and self._active_src in img_anchor_map:
             anchor = tuple(img_anchor_map[self._active_src])
@@ -308,7 +281,7 @@ class MainWindow(BaseTk):
         else:
             anchor = tuple(self.app_settings.wm_anchor)
 
-        self._wm_anchor = anchor  # 드래그 유령 위치
+        self._wm_anchor = anchor
 
         try:
             before_img, after_img = self.controller.preview_by_key(
@@ -325,8 +298,6 @@ class MainWindow(BaseTk):
         key = self.post_list.get_selected_post()
         if not key or key not in self.posts:
             return
-
-        # 이미지 편집 모드면 이미지 앵커, 아니면 게시물 앵커
         meta = self.posts[key]
         if self._active_src:
             img_map = meta.get("img_anchors")
@@ -337,12 +308,10 @@ class MainWindow(BaseTk):
             meta["anchor"] = (float(norm_xy[0]), float(norm_xy[1]))
 
         self._wm_anchor = (float(norm_xy[0]), float(norm_xy[1]))
-        # 썸네일 오버레이 즉시 갱신
         self._refresh_gallery_overlay(key)
         self.on_preview()
 
     def _refresh_gallery_overlay(self, key: str):
-        """현재 게시물의 기본/개별 앵커로 썸네일 오버레이 갱신."""
         meta = self.posts.get(key) or {}
         default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
         img_map = meta.get("img_anchors") or {}
@@ -366,30 +335,24 @@ class MainWindow(BaseTk):
             messagebox.showerror("출력 폴더", f"출력 루트를 만들 수 없습니다:\n{e}")
             return
 
-        # ✅ 상태바에 출력 루트 알려주기 (+ 버튼 활성화)
         self.status.set_output_root(out_root)
         self.status.enable_open_button(True)
 
         total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
         self.status.reset(total)
 
-        def on_prog(n):
-            self.status.update_progress(n)
-
-        # ✅ 완료 로그 + 버튼 보장
+        def on_prog(n): self.status.update_progress(n)
         def on_done(n, _out=out_root):
             self.status.finish(n)
             self.status.log_info(f"저장 위치: {_out}")
             self.status.enable_open_button(True)
-
-        def on_err(msg):
-            self.status.log_error(msg)
+        def on_err(msg): self.status.log_error(msg)
 
         self.controller.start_batch(settings, self.posts, on_prog, on_done, on_err)
 
     def _on_close(self):
         try:
-            self._on_options_changed()  # 옵션 저장
+            self._on_options_changed()
         except Exception:
             pass
         self.destroy()

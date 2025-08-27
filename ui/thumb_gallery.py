@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Callable, List, Optional, Dict, Tuple
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 
-# -------------------- overlay helpers --------------------
-
 def _measure_text_bbox(d: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, stroke_w: int) -> Tuple[int, int]:
     try:
         l, t, r, b = d.textbbox((0, 0), text, font=font, stroke_width=max(0, stroke_w))
@@ -23,8 +21,7 @@ def _draw_anchor_marker(square_img: Image.Image, content_box: Tuple[int,int,int,
     iw, ih = max(1, x1 - x0), max(1, y1 - y0)
     nx = min(1.0, max(0.0, float(anchor[0])))
     ny = min(1.0, max(0.0, float(anchor[1])))
-    cx = int(x0 + nx * iw)
-    cy = int(y0 + ny * ih)
+    cx = int(x0 + nx * iw); cy = int(y0 + ny * ih)
     d = ImageDraw.Draw(square_img, "RGBA")
     r = max(2, int(radius))
     d.ellipse((cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1), fill=(255, 255, 255, 230))
@@ -43,13 +40,11 @@ def _draw_badge(square_img: Image.Image, text="•", bg=(76,175,80), fg=(255,255
     tw, th = _measure_text_bbox(d, text, font, 0)
     d.text((cx - tw // 2, cy - th // 2 - 1), text, font=font, fill=fg)
 
-# -------------------- gallery --------------------
-
 class ThumbGallery(ttk.Frame):
     """썸네일 그리드(스크롤 가능) + 앵커 오버레이/배지.
        - 클릭 한 번으로 on_activate 호출
        - 갤러리/썸네일 어디 위든 휠 스크롤 동작(전역 바인딩 + 포인터 가드)
-       - ← ↑ → ↓ 로 선택 이동(활성화시 on_activate 즉시 호출)
+       - ← ↑ → ↓ 이동, ▶ 끝에서 다음 줄 첫 칸으로 랩, ◀ 처음에서 이전 줄 마지막 칸으로 랩
     """
     def __init__(self, master, on_activate: Optional[Callable[[Path], None]] = None,
                  thumb_size: int = 160, cols: int = 5, height: int = 220):
@@ -59,7 +54,6 @@ class ThumbGallery(ttk.Frame):
         self.cols = int(cols)
         self.fixed_height = int(height)
 
-        # canvas + inner
         self.canvas = tk.Canvas(self, highlightthickness=0, height=self.fixed_height)
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vbar.set)
@@ -71,16 +65,13 @@ class ThumbGallery(ttk.Frame):
         self.inner.bind("<Configure>", self._on_inner_config)
         self.canvas.bind("<Configure>", self._on_canvas_config)
 
-        # ✅ 전역 휠 바인딩: 항상 켜둠(포인터 가드로 범위 제한)
         self._install_global_wheel()
-        # ✅ 키보드 네비게이션 바인딩(포인터 가드 또는 포커스 가드)
         self._install_keyboard_nav()
 
-        # state
         self._tiles: Dict[Path, tk.Frame] = {}
         self._imgs: Dict[Path, ImageTk.PhotoImage] = {}
         self._active: Optional[Path] = None
-        self._order: List[Path] = []   # 인덱스 → Path 매핑
+        self._order: List[Path] = []
 
         self._default_anchor: Tuple[float, float] = (0.5, 0.5)
         self._img_anchor_map: Dict[Path, Tuple[float, float]] = {}
@@ -123,14 +114,10 @@ class ThumbGallery(ttk.Frame):
             lbl_txt.pack(padx=4, pady=(2, 6))
 
             def _activate(_=None, path=p):
-                # 클릭 시: 선택 + on_activate + 포커스 부여(방향키 사용 가능)
                 self.set_active(path, fire=True)
-                try:
-                    self.focus_set()
-                except Exception:
-                    pass
+                try: self.focus_set()
+                except Exception: pass
 
-            # ✅ 단일 클릭 활성화(타일/이미지/텍스트 모두)
             for w in (tile, lbl_img, lbl_txt):
                 w.bind("<Button-1>", _activate)
 
@@ -141,7 +128,6 @@ class ThumbGallery(ttk.Frame):
         self._update_scroll()
 
     def set_active(self, path: Optional[Path], fire: bool = False):
-        # 이전 스타일 복구
         if self._active and self._active in self._tiles:
             self._tiles[self._active].configure(bd=1, relief="groove")
 
@@ -154,7 +140,7 @@ class ThumbGallery(ttk.Frame):
                 self.on_activate(path)
 
     def set_badged(self, paths: set[Path]):
-        pass  # 현재는 개별 앵커 보유 시 자동 배지
+        pass
 
     def update_anchor_overlay(self, default_anchor: Tuple[float, float],
                               img_anchor_map: Dict[Path, Tuple[float, float]]):
@@ -202,12 +188,10 @@ class ThumbGallery(ttk.Frame):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _scroll_into_view(self, path: Path):
-        """선택 타일이 보이도록 스크롤 조정."""
         try:
             self.update_idletasks()
             tile = self._tiles.get(path)
-            if not tile:
-                return
+            if not tile: return
             tile_y = tile.winfo_y()
             tile_h = tile.winfo_height()
             inner_h = max(1, self.inner.winfo_height())
@@ -221,13 +205,11 @@ class ThumbGallery(ttk.Frame):
         except Exception:
             pass
 
-    # ---------- wheel handling (always-on bind_all + pointer guard) ----------
+    # ---------- wheel handling (bind_all + pointer guard) ----------
 
     def _install_global_wheel(self):
         root = self.winfo_toplevel()
-        # Windows / macOS
         root.bind_all("<MouseWheel>", self._on_wheel, add="+")
-        # X11 (Linux)
         root.bind_all("<Button-4>", self._on_btn4, add="+")
         root.bind_all("<Button-5>", self._on_btn5, add="+")
 
@@ -245,7 +227,6 @@ class ThumbGallery(ttk.Frame):
     def _on_wheel(self, e):
         if not self._pointer_inside_me(e):
             return
-        # delta를 단위 스텝으로 변환(트랙패드 연속 스크롤 대응)
         delta = e.delta
         steps = int(abs(delta) / 120) if abs(delta) >= 120 else 1
         direction = -1 if delta > 0 else 1
@@ -264,7 +245,7 @@ class ThumbGallery(ttk.Frame):
         self.canvas.yview_scroll(+3, "units")
         return "break"
 
-    # ---------- keyboard navigation (bind_all + pointer/focus guard) ----------
+    # ---------- keyboard navigation with wrapping ----------
 
     def _install_keyboard_nav(self):
         root = self.winfo_toplevel()
@@ -290,7 +271,6 @@ class ThumbGallery(ttk.Frame):
         return False
 
     def _kbd_guard(self, e) -> bool:
-        # 마우스가 갤러리 위에 있거나, 갤러리가 포커스를 가지고 있을 때만 키 처리
         return self._pointer_inside_me(e) or self._has_focus_within()
 
     def _index_of(self, path: Optional[Path]) -> int:
@@ -302,63 +282,61 @@ class ThumbGallery(ttk.Frame):
             return -1
 
     def _select_by_index(self, idx: int):
-        if not self._order:
-            return
-        if idx < 0 or idx >= len(self._order):
-            return
+        if not self._order: return
+        if idx < 0 or idx >= len(self._order): return
         self.set_active(self._order[idx], fire=True)
 
-    def _move_selection(self, dc: int, dr: int):
-        """열/행 변화량으로 이동(범위 밖이면 무시, 래핑 없음)."""
-        if not self._order:
-            return
+    def _move_selection(self, dc: int, dr: int, wrap_h: bool = False):
+        if not self._order: return
         cur_idx = self._index_of(self._active)
         if cur_idx == -1:
-            # 아직 아무것도 선택 안 되어 있으면 첫 항목 선택
-            self._select_by_index(0)
-            return
+            self._select_by_index(0); return
         cols = self.cols
         r, c = divmod(cur_idx, cols)
         nr, nc = r + dr, c + dc
-        if nr < 0 or nc < 0 or nc >= cols:
-            return
+
+        if dr == 0 and dc == +1 and wrap_h:
+            # ▶ 오른쪽 랩: 다음 칸 없으면 다음 줄 첫 칸
+            if nc >= cols or (nr*cols + nc) >= len(self._order):
+                nr, nc = r + 1, 0
+        elif dr == 0 and dc == -1 and wrap_h:
+            # ◀ 왼쪽 랩: 이전 칸 없으면 이전 줄 마지막 유효 칸
+            if nc < 0:
+                prev_row_last_idx = r*cols - 1
+                if prev_row_last_idx >= 0:
+                    self._select_by_index(prev_row_last_idx)
+                return
+
         nidx = nr * cols + nc
         if 0 <= nidx < len(self._order):
             self._select_by_index(nidx)
 
-    # 키 핸들러들
     def _on_left(self, e):
-        if not self._kbd_guard(e):
-            return
-        self._move_selection(dc=-1, dr=0)
+        if not self._kbd_guard(e): return
+        self._move_selection(dc=-1, dr=0, wrap_h=True)
         return "break"
 
     def _on_right(self, e):
-        if not self._kbd_guard(e):
-            return
-        self._move_selection(dc=+1, dr=0)
+        if not self._kbd_guard(e): return
+        self._move_selection(dc=+1, dr=0, wrap_h=True)
         return "break"
 
     def _on_up(self, e):
-        if not self._kbd_guard(e):
-            return
-        self._move_selection(dc=0, dr=-1)
+        if not self._kbd_guard(e): return
+        self._move_selection(dc=0, dr=-1, wrap_h=False)
         return "break"
 
     def _on_down(self, e):
-        if not self._kbd_guard(e):
-            return
-        self._move_selection(dc=0, dr=+1)
+        if not self._kbd_guard(e): return
+        self._move_selection(dc=0, dr=+1, wrap_h=False)
         return "break"
 
     def _on_home(self, e):
-        if not self._kbd_guard(e):
-            return
+        if not self._kbd_guard(e): return
         self._select_by_index(0)
         return "break"
 
     def _on_end(self, e):
-        if not self._kbd_guard(e):
-            return
+        if not self._kbd_guard(e): return
         self._select_by_index(len(self._order) - 1)
         return "break"

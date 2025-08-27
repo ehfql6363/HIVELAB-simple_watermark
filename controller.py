@@ -8,25 +8,20 @@ import os
 
 from PIL import Image
 
-from settings import AppSettings, RootConfig
-from services.discovery import scan_posts
+from settings import AppSettings, RootConfig, DEFAULT_WM_TEXT
+from services.discovery import scan_posts, IMG_EXTS
 from services.image_ops import load_image
 from services.resize import resize_contain
 from services.watermark import add_text_watermark
-from services.writer import save_image  # ✅ 고속 저장(옵션 튜닝)
+from services.writer import save_image  # 고속 저장
 
 class AppController:
     def __init__(self):
         self._processed = 0
-        # 미리보기/반복 리사이즈 캐시(LRU)
         self._canvas_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
         self._canvas_cache_limit = 64
 
     def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> str:
-        """
-        루트별 텍스트가 ''(빈 문자열)로 명시되면 워터마크 '비활성'.
-        그 외에는 루트별 텍스트 우선, 없으면 기본값.
-        """
         if rc.wm_text is not None and rc.wm_text.strip() == "":
             return ""  # 명시적 비활성
         if (rc.wm_text or "").strip():
@@ -34,12 +29,15 @@ class AppController:
         return (settings.default_wm_text or "").strip()
 
     # ---------- 스캔 ----------
-    def scan_posts_multi(self, roots: List[RootConfig]) -> Dict[str, dict]:
+    def scan_posts_multi(self, roots: List[RootConfig], loose_images: Optional[List[Path]] = None) -> Dict[str, dict]:
         """
-        - 루트에 바로 이미지가 있으면 단일 게시물로 간주(__SELF__)
-        - 아니면 하위 폴더를 게시물로 스캔
+        - 루트에 바로 이미지가 있으면 단일 게시물(__SELF__)
+        - 하위 폴더를 게시물로 스캔
+        - loose_images 가 있으면 '이미지'라는 가상 게시물로 묶음
         """
         posts: Dict[str, dict] = {}
+
+        # 1) 루트들 스캔
         for rc in roots:
             root = rc.path
             sub = scan_posts(root)
@@ -56,13 +54,26 @@ class AppController:
                     "root": rc,
                     "post_name": display_post,
                     "files": files,
-                    "post_dir": post_dir,  # 저장시 사용할 실제 폴더
+                    "post_dir": post_dir,
                 }
+
+        # 2) loose 이미지 → '이미지' 가상 게시물
+        li = [p for p in (loose_images or []) if p.exists() and p.is_file() and p.suffix.lower() in IMG_EXTS]
+        if li:
+            # 가상 루트: 기본 워터마크 규칙을 쓰도록 DEFAULT_WM_TEXT 넣어둠
+            vroot = RootConfig(path=Path("[IMAGES]"), wm_text=DEFAULT_WM_TEXT)
+            posts["이미지"] = {
+                "root": vroot,
+                "post_name": "이미지",
+                "files": li,
+                "post_dir": Path(""),   # 의미 없음
+                "is_loose": True,       # ✅ 출력 경로 처리용 플래그
+            }
+
         return posts
 
     # ---------- 공통 유틸 ----------
     def _choose_anchor(self, meta: dict, settings: AppSettings, src: Optional[Path] = None):
-        # 우선순위: 이미지 앵커 > 게시물 앵커 > 기본 앵커
         if src is not None:
             img_map = meta.get("img_anchors") or {}
             if src in img_map:
@@ -85,7 +96,7 @@ class AppController:
             self._canvas_cache[key] = im
             return im
 
-        base = load_image(src)  # 이미 RGB Image 보장
+        base = load_image(src)  # RGB Image 보장
         if not isinstance(base, Image.Image):
             raise ValueError(f"이미지 로드 실패(타입 불일치): {src}")
 
@@ -109,9 +120,6 @@ class AppController:
         src = selected_src or meta["files"][0]
 
         before = load_image(src)
-        if not isinstance(before, Image.Image):
-            raise ValueError(f"이미지 로드 실패(타입 불일치): {src}")
-
         tgt = settings.sizes[0]
         canvas = before.copy() if tuple(tgt) == (0, 0) else self._get_resized_canvas(src, tgt, settings.bg_color).copy()
 
@@ -134,13 +142,14 @@ class AppController:
         return before, after
 
     # ---------- 출력 경로 ----------
-    def _output_dir_for(self, src: Path, rc: RootConfig, out_root: Path, post_name: str) -> Path:
+    def _output_dir_for(self, src: Path, rc: RootConfig, out_root: Path, post_name: str, is_loose: bool = False) -> Path:
         """
-        출력 경로: out_root / rc.path.name / (src.parent relative to rc.path)
-        - 계정/게시물 업로드:  out_root/계정/게시물
-        - 게시물만 업로드:    out_root/게시물
-        - 내부 더 깊은 구조도 그대로 보존
+        일반: out_root / rc.path.name / (src.parent relative to rc.path)
+        느슨한 이미지(is_loose=True): out_root (바로 저장)
         """
+        if is_loose:
+            return out_root
+
         base = out_root / rc.path.name
         try:
             rel = src.parent.relative_to(rc.path)
@@ -157,14 +166,8 @@ class AppController:
         done_cb: Callable[[int], None],
         error_cb: Callable[[str], None] | None = None,
     ):
-        """
-        ThreadPoolExecutor로 병렬 처리.
-        - JPEG 저장 옵션: quality=90, optimize=False, progressive=False (빠른 저장)
-        - progress_cb / error_cb / done_cb는 기존과 동일하게 호출
-        """
         self._processed = 0
 
-        # 작업 목록 생성
         jobs: List[tuple[RootConfig, dict, Path, int, int]] = []
         for _, meta in posts.items():
             rc: RootConfig = meta["root"]
@@ -177,17 +180,13 @@ class AppController:
             if done_cb: done_cb(0)
             return
 
-        # 워커 함수
         def _do(rc: RootConfig, meta: dict, src: Path, w: int, h: int) -> None:
             wm_text = self._resolve_wm_text(rc, settings)
             anchor = self._choose_anchor(meta, settings, src)
-            # 리사이즈 베이스(일괄 처리도 동일 경로 → 캐시 활용)
             canvas = self._get_resized_canvas(src, (w, h), settings.bg_color)
-            if not wm_text:
-                out_img = canvas
-            else:
-                # ✅ 캐시 공유 이미지 보호: 워터마크 적용 시에만 복사본 생성
-                out_img = add_text_watermark(
+            out_img = (
+                canvas if not wm_text else
+                add_text_watermark(
                     canvas.copy(),
                     text=wm_text,
                     opacity_pct=settings.wm_opacity,
@@ -198,18 +197,11 @@ class AppController:
                     anchor_norm=anchor,
                     font_path=settings.wm_font_path,
                 )
-            # 저장
-            out_dir = self._output_dir_for(src, rc, settings.output_root, meta["post_name"])
-            dst = out_dir / f"{src.stem}_wm.jpg"
-            save_image(
-                out_img,
-                dst,
-                quality=90,         # 속도/용량 균형
-                optimize=False,     # 빠르게
-                progressive=False   # 빠르게
             )
+            out_dir = self._output_dir_for(src, rc, settings.output_root, meta["post_name"], bool(meta.get("is_loose")))
+            dst = out_dir / f"{src.stem}_wm.jpg"
+            save_image(out_img, dst, quality=90, optimize=False, progressive=False)
 
-        # 병렬 실행
         max_workers = min(8, (os.cpu_count() or 4))
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -218,46 +210,11 @@ class AppController:
                     try:
                         f.result()
                     except Exception as e:
-                        if error_cb:
-                            error_cb(str(e))
+                        if error_cb: error_cb(str(e))
                     finally:
                         self._processed += 1
-                        if progress_cb:
-                            progress_cb(self._processed)
+                        if progress_cb: progress_cb(self._processed)
         except Exception as e:
-            if error_cb:
-                error_cb(str(e))
+            if error_cb: error_cb(str(e))
         finally:
-            if done_cb:
-                done_cb(self._processed)
-
-    # ---------- 단일 이미지 처리(내부) ----------
-    def _process_image(
-            self,
-            src: Path,
-            target: Tuple[int, int],
-            settings: AppSettings,
-            wm_text: str,
-            anchor
-    ) -> Image.Image:
-        im = load_image(src)  # 이미 RGB Image
-        if not isinstance(im, Image.Image):
-            raise ValueError(f"이미지 로드 실패(타입 불일치): {src}")
-
-        canvas = im if tuple(target) == (0, 0) else resize_contain(im, target, settings.bg_color)
-        if not (wm_text or "").strip():
-            return canvas
-
-        out = add_text_watermark(
-            canvas,
-            text=wm_text,
-            opacity_pct=settings.wm_opacity,
-            scale_pct=settings.wm_scale_pct,
-            fill_rgb=settings.wm_fill_color,
-            stroke_rgb=settings.wm_stroke_color,
-            stroke_width=settings.wm_stroke_width,
-            anchor_norm=anchor,
-            font_path=settings.wm_font_path,
-        )
-        return out
-
+            if done_cb: done_cb(self._processed)

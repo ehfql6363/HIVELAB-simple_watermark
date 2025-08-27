@@ -9,7 +9,7 @@ class PostList(ttk.Frame):
         self,
         master,
         on_select: Optional[Callable[[str | None], None]] = None,
-        on_activate: Optional[Callable[[str | None], None]] = None,  # 🔹 더블클릭 콜백
+        on_activate: Optional[Callable[[str | None], None]] = None,
     ):
         super().__init__(master)
         self.on_select = on_select
@@ -32,15 +32,22 @@ class PostList(ttk.Frame):
         ttk.Button(btns, text="선택 삭제", command=self.remove_selected).pack(side="left")
         ttk.Button(btns, text="모두 삭제", command=self.remove_all).pack(side="left", padx=6)
 
-        # 이벤트 바인딩
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        self.tree.bind("<Double-1>", self._on_double_click)  # 🔹 더블클릭으로 활성화
+        self.tree.bind("<Double-1>", self._on_double_click)
 
     def set_posts(self, posts: Dict[str, dict]):
         self.tree.delete(*self.tree.get_children())
         for key, meta in sorted(posts.items()):
             cnt = len(meta.get("files", []))
             self.tree.insert("", "end", values=(key, cnt))
+
+    def select_key(self, key: str):
+        """키 값으로 행을 선택(스크롤 포함)."""
+        for iid in self.tree.get_children():
+            if self.tree.set(iid, "key") == key:
+                self.tree.selection_set(iid)
+                self.tree.see(iid)
+                break
 
     def get_selected_post(self) -> str | None:
         sel = self.tree.selection()
@@ -62,17 +69,14 @@ class PostList(ttk.Frame):
         if messagebox.askyesno("모두 삭제", "게시물 목록을 모두 삭제할까요?"):
             self.clear()
 
-    # ---- 핸들러 ----
     def _on_select(self, _):
         if self.on_select:
             self.on_select(self.get_selected_post())
 
     def _on_double_click(self, event):
-        # 클릭 위치가 실제 행인지 확인
         rowid = self.tree.identify_row(event.y)
         if not rowid:
             return
-        # 해당 행을 선택 상태로 만들고 콜백 호출
         self.tree.selection_set(rowid)
         key = self.tree.set(rowid, "key")
         if self.on_activate:
