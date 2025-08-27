@@ -65,7 +65,7 @@ class OptionsPanel(ttk.Frame):
         size_frame.grid(row=0, column=2, padx=0, pady=(0, 2), sticky="w")
         ttk.Label(size_frame, text="타겟 크기:").grid(row=0, column=0, sticky="w")
         preset = ["원본 그대로"] + [f"{w}x{h}" for (w, h) in DEFAULT_SIZES]
-        self.var_size = tk.StringVar(value=preset[1])
+        self.var_size = tk.StringVar(value=preset[0])
         self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset,
                                     width=12, state="readonly")
         self.cb_size.grid(row=0, column=3, sticky="w")
