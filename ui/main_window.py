@@ -45,6 +45,7 @@ class MainWindow(BaseTk):
         self.status.pack(side="bottom", fill="x", padx=8, pady=8)
 
         self.opt.set_initial_options(self.app_settings)
+        self._on_options_changed()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_header(self, parent):
@@ -207,37 +208,20 @@ class MainWindow(BaseTk):
 
     def on_scan(self):
         roots = self.opt.get_roots()
-        loose = []
-        if hasattr(self.opt, "get_loose_images"):
-            try:
-                loose = self.opt.get_loose_images() or []
-            except Exception:
-                loose = []
-
-        if not roots and not loose:
-            messagebox.showinfo("대상 없음", "루트를 추가하거나 이미지 파일을 드래그&드롭하세요.")
+        if not roots:
+            messagebox.showinfo("루트 폴더", "먼저 루트 폴더를 추가하세요.")
             return
 
-        # 컨트롤러가 loose 이미지를 함께 받도록 호출
-        try:
-            self.posts = self.controller.scan_posts_multi(roots, loose_images=loose)
-        except TypeError:
-            # (구버전 안전장치) loose 미지원이면 루트만 스캔
-            self.posts = self.controller.scan_posts_multi(roots)
-
+        dropped = self.opt.get_dropped_images()
+        self.posts = self.controller.scan_posts_multi(
+            roots,
+            dropped_images=dropped
+        )
         self.post_list.set_posts(self.posts)
-
         # 초기화
         self._active_src = None
         self.gallery.clear()
         self.gallery.update_anchor_overlay((0.5, 0.5), {})
-
-        # ✅ '이미지' 가상 게시물 자동 선택 (있으면)
-        prefer = "이미지" if "이미지" in self.posts else (next(iter(self.posts.keys()), None))
-        if prefer:
-            if hasattr(self.post_list, "select_key"):
-                self.post_list.select_key(prefer)
-            self.on_select_post(prefer)
 
     def on_select_post(self, key: str | None):
         self._active_src = None

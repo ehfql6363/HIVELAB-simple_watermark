@@ -11,7 +11,7 @@ DEFAULT_WM_TEXT = "워터마크"
 DEFAULT_WM_FILL = (0, 0, 0)
 DEFAULT_WM_STROKE = (255, 255, 255)
 DEFAULT_WM_STROKE_W = 2
-IMAGES_VROOT = "__IMAGES__"   # 가상 루트 키(드롭 파일 전용)
+IMAGES_VROOT = "__DROPPED_IMAGES__"   # 가상 루트 키(드롭 파일 전용)
 
 CONFIG_PATH = Path.home() / ".post_wm_tool.json"
 
@@ -23,23 +23,16 @@ class RootConfig:
 @dataclass
 class AppSettings:
     output_root: Path = Path("")
-    sizes: List[Tuple[int, int]] = None
-    bg_color: Tuple[int, int, int] = DEFAULT_BG
+    sizes: List[Tuple[int, int]] = field(default_factory=lambda: [(1080, 1080)])
+    bg_color: Tuple[int, int, int] = (255, 255, 255)
     wm_opacity: int = 30
-    wm_scale_pct: int = 20  # ← 의도적으로 크게 사용 중이면 OK
-    default_wm_text: str = DEFAULT_WM_TEXT
-
-    wm_fill_color: Tuple[int, int, int] = DEFAULT_WM_FILL
-    wm_stroke_color: Tuple[int, int, int] = DEFAULT_WM_STROKE
-    wm_stroke_width: int = DEFAULT_WM_STROKE_W
-
+    wm_scale_pct: int = 20
+    default_wm_text: str = "워터마크"
+    wm_fill_color: Tuple[int, int, int] = (0, 0, 0)
+    wm_stroke_color: Tuple[int, int, int] = (255, 255, 255)
+    wm_stroke_width: int = 2
     wm_anchor: Tuple[float, float] = (0.5, 0.5)
     wm_font_path: Optional[Path] = None
-
-    # 게시물별 앵커(세션 전용 메모리)
-    post_anchors: Dict[str, Tuple[float, float]] = field(default_factory=dict)
-
-    # 파일 다이얼로그 최근 폴더 기억(출력/폰트 각각)
     last_dir_output_dialog: Optional[Path] = None
     last_dir_font_dialog: Optional[Path] = None
 
@@ -100,19 +93,52 @@ class AppSettings:
         )
 
     # -------- file IO --------
-    def save(self, path: Path | None = None):
-        path = path or CONFIG_PATH
-        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    def save(self) -> None:
+        data = {
+            "output_root": str(self.output_root) if self.output_root else "",
+            "sizes": [list(map(int, t)) for t in self.sizes],
+            "bg_color": list(self.bg_color),
+            "wm_opacity": int(self.wm_opacity),
+            "wm_scale_pct": int(self.wm_scale_pct),
+            "default_wm_text": self.default_wm_text,
+            "wm_fill_color": list(self.wm_fill_color),
+            "wm_stroke_color": list(self.wm_stroke_color),
+            "wm_stroke_width": int(self.wm_stroke_width),
+            "wm_anchor": list(self.wm_anchor),
+            "wm_font_path": str(self.wm_font_path) if self.wm_font_path else "",
+            "last_dir_output_dialog": str(self.last_dir_output_dialog) if self.last_dir_output_dialog else "",
+            "last_dir_font_dialog": str(self.last_dir_font_dialog) if self.last_dir_font_dialog else "",
+        }
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     @staticmethod
-    def load(path: Path | None = None) -> "AppSettings":
-        path = path or CONFIG_PATH
-        if not path.exists():
-            return AppSettings()
+    def load() -> "AppSettings":
         try:
-            return AppSettings.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
         except Exception:
             return AppSettings()
+
+        s = AppSettings()
+        s.output_root = Path(data.get("output_root", "")) if data.get("output_root") else Path("")
+        s.sizes = [tuple(map(int, t)) for t in data.get("sizes", [])] or [(1080, 1080)]
+        s.bg_color = tuple(data.get("bg_color", (255, 255, 255)))
+        s.wm_opacity = int(data.get("wm_opacity", 30))
+        s.wm_scale_pct = int(data.get("wm_scale_pct", 20))
+        s.default_wm_text = data.get("default_wm_text", "워터마크")
+        s.wm_fill_color = tuple(data.get("wm_fill_color", (0, 0, 0)))
+        s.wm_stroke_color = tuple(data.get("wm_stroke_color", (255, 255, 255)))
+        s.wm_stroke_width = int(data.get("wm_stroke_width", 2))
+        s.wm_anchor = tuple(data.get("wm_anchor", (0.5, 0.5)))
+        font_str = data.get("wm_font_path") or ""
+        s.wm_font_path = Path(font_str) if font_str else None
+        out_dir = data.get("last_dir_output_dialog") or ""
+        s.last_dir_output_dialog = Path(out_dir) if out_dir else None
+        font_dir = data.get("last_dir_font_dialog") or ""
+        s.last_dir_font_dialog = Path(font_dir) if font_dir else None
+        return s
 
 def hex_to_rgb(hexstr: str) -> Tuple[int, int, int]:
     hs = hexstr.lstrip("#")

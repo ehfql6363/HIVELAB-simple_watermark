@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from pathlib import Path
-from typing import Dict, List, Tuple, Callable, Optional
+
+import os
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
+from pathlib import Path
+from typing import Dict, List, Tuple, Callable, Optional
 
 from PIL import Image
 
-from settings import AppSettings, RootConfig, DEFAULT_WM_TEXT
-from services.discovery import scan_posts, IMG_EXTS
+from services.discovery import scan_posts
 from services.image_ops import load_image
 from services.resize import resize_contain
 from services.watermark import add_text_watermark
 from services.writer import save_image  # 고속 저장
+from settings import AppSettings, RootConfig, DEFAULT_WM_TEXT, IMAGES_VROOT
 
 IMG_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
 
@@ -23,6 +24,40 @@ class AppController:
         self._canvas_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
         self._canvas_cache_limit = 64
 
+    def _flat_output_dir(self, out_root: Path) -> Path:
+        """
+        항상 출력 루트에만 저장(폴더 감싸지 않음).
+        """
+        try:
+            out_root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return out_root
+
+    def _filename_for(self, src: Path, w: int, h: int) -> str:
+        """
+        크기 지정 시 파일명에 _{WxH} 태그를 붙여 다중 크기 저장 시 충돌 방지.
+        원본 크기(0,0)일 땐 태그 생략.
+        """
+        size_tag = "" if (w, h) == (0, 0) else f"_{w}x{h}"
+        return f"{src.stem}{size_tag}_wm.jpg"
+
+    def _unique_path(self, out_dir: Path, filename: str) -> Path:
+        """
+        같은 이름이 있으면 _1, _2 … 를 붙여 고유 경로를 만든다.
+        """
+        dst = out_dir / filename
+        if not dst.exists():
+            return dst
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        i = 1
+        while True:
+            cand = out_dir / f"{stem}_{i}{suffix}"
+            if not cand.exists():
+                return cand
+            i += 1
+
     def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> str:
         if getattr(rc, "wm_text", None) is not None and str(rc.wm_text).strip() == "":
             return ""
@@ -31,12 +66,30 @@ class AppController:
         return (settings.default_wm_text or "").strip()
 
     # ---------- 스캔 ----------
-    def scan_posts_multi(self, roots: List[RootConfig], loose_images: Optional[List[Path]] = None) -> Dict[str, dict]:
+    def scan_posts_multi(
+            self,
+            roots: List[RootConfig],
+            dropped_images: Optional[List[Path]] = None
+    ) -> Dict[str, dict]:
         posts: Dict[str, dict] = {}
-
-        # 1) 루트들 스캔
+        dropped_images = list(dropped_images or [])
         for rc in roots:
             root = rc.path
+
+            # 🔹 가상 루트: 드롭한 이미지 모음
+            if str(root) == IMAGES_VROOT:
+                imgs = [p for p in dropped_images if p.is_file() and p.suffix.lower() in IMG_EXTS]
+                if imgs:
+                    key = "이미지"  # 게시물 리스트에 보일 이름
+                    posts[key] = {
+                        "root": rc,
+                        "post_name": key,
+                        "files": imgs,
+                        "post_dir": root,  # 더미(실제 폴더 아님)
+                    }
+                continue
+
+            # 🔹 일반 루트: 기존 폴더 스캔
             sub = scan_posts(root)
             for post_name, files in sub.items():
                 if post_name == "__SELF__":
@@ -53,21 +106,6 @@ class AppController:
                     "files": files,
                     "post_dir": post_dir,
                 }
-
-        # 2) 느슨한(폴더 밖) 이미지 → '이미지' 가상 게시물
-        if loose_images:
-            valid = [p for p in loose_images if p.exists() and p.is_file() and p.suffix.lower() in IMG_EXTS]
-            valid = sorted(set(valid), key=lambda p: (p.parent, p.name.lower()))
-            if valid:
-                # wm_text=None → 기본값 사용, ""이면 비활성화가 되니 None 추천
-                posts["이미지"] = {
-                    "root": RootConfig(path=Path("__LOOSE__"), wm_text=None),
-                    "post_name": "이미지",
-                    "files": valid,
-                    "post_dir": Path("."),   # 의미 없음 (저장은 out_root 바로 아래)
-                    "is_loose": True,
-                }
-
         return posts
 
     # ---------- 공통 유틸 ----------
@@ -141,12 +179,8 @@ class AppController:
 
     # ---------- 출력 경로 ----------
     def _output_dir_for(self, src: Path, rc: RootConfig, out_root: Path, post_name: str) -> Path:
-        # ✅ 느슨한 이미지는 out_root 바로 아래에 저장
-        try:
-            if rc.path.name == "__LOOSE__":
-                return out_root
-        except Exception:
-            pass
+        if str(rc.path) == IMAGES_VROOT:
+            return out_root
 
         base = out_root / rc.path.name
         try:
@@ -196,9 +230,17 @@ class AppController:
                     font_path=settings.wm_font_path,
                 )
             )
-            out_dir = self._output_dir_for(src, rc, settings.output_root, meta["post_name"], bool(meta.get("is_loose")))
-            dst = out_dir / f"{src.stem}_wm.jpg"
-            save_image(out_img, dst, quality=90, optimize=False, progressive=False)
+            out_dir = self._flat_output_dir(settings.output_root)
+            fname = self._filename_for(src, w, h)
+            dst = self._unique_path(out_dir, fname)
+
+            save_image(
+                out_img,
+                dst,
+                quality=90,
+                optimize=False,
+                progressive=False
+            )
 
         max_workers = min(8, (os.cpu_count() or 4))
         try:
