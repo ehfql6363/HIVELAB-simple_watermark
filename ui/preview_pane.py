@@ -159,20 +159,27 @@ class _CheckerCanvas(tk.Canvas):
         raw_scale = min(w / W, h / H, 1.0)
         step = 1.0 / 64.0
         scale = max(step, round(raw_scale / step) * step)
-        iw, ih = max(1, int(W*scale)), max(1, int(H*scale))
-        x0, y0 = (w - iw)//2, (h - ih)//2
+        iw, ih = max(1, int(W * scale)), max(1, int(H * scale))
+        x0, y0 = (w - iw) // 2, (h - ih) // 2
 
         resample = Image.Resampling.BILINEAR if self._resample_fast else Image.Resampling.LANCZOS
 
-        # (iw,ih) 같으면 기존 PhotoImage 그대로 두고 좌표만 이동 → 재생성 스킵
+        # 🔧 여기: '같은 크기' 뿐 아니라 '같은 소스 이미지'일 때만 PhotoImage 재사용
+        cur_src_id = id(self._pil_img)
+        prev_src_id = self._last.get("src_id")
+
         reuse_image = (
-            self._img_id is not None
-            and iw == self._last["iw"]
-            and ih == self._last["ih"]
+                self._img_id is not None
+                and iw == self._last["iw"]
+                and ih == self._last["ih"]
+                and cur_src_id == prev_src_id  # ← 추가: 소스 이미지 동일할 때만 재사용
         )
+
         if reuse_image:
+            # 같은 이미지(객체)이고 같은 크기면 좌표만 갱신
             self.coords(self._img_id, x0, y0)
         else:
+            # 이미지가 달라졌거나 크기가 달라졌으면 새 PhotoImage 생성
             disp = self._pil_img if (iw == W and ih == H) else self._pil_img.resize((iw, ih), resample)
             tkimg = ImageTk.PhotoImage(disp)
             self._img_refs.append(tkimg)
@@ -182,8 +189,9 @@ class _CheckerCanvas(tk.Canvas):
                 self.itemconfigure(self._img_id, image=tkimg)
                 self.coords(self._img_id, x0, y0)
 
-        self.tag_lower("checker"); self.tag_raise("content")
-        self._last.update({"w":w,"h":h,"x0":x0,"y0":y0,"iw":iw,"ih":ih})
+        self.tag_lower("checker");
+        self.tag_raise("content")
+        self._last.update({"w": w, "h": h, "x0": x0, "y0": y0, "iw": iw, "ih": ih, "src_id": cur_src_id})
 
         self._ensure_wm_sprite()
         self._draw_grid_overlay(); self._draw_cell_highlight(); self._draw_wmghost()
