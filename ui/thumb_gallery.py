@@ -47,8 +47,9 @@ def _draw_badge(square_img: Image.Image, text="•", bg=(76,175,80), fg=(255,255
 
 class ThumbGallery(ttk.Frame):
     """썸네일 그리드(스크롤 가능) + 앵커 오버레이/배지.
-       - 클릭 한 번으로 on_activate 호출 (전역 클릭 캐처 + 포인터 가드)
+       - 클릭 한 번으로 on_activate 호출
        - 갤러리/썸네일 어디 위든 휠 스크롤 동작(전역 바인딩 + 포인터 가드)
+       - ← ↑ → ↓ 로 선택 이동(활성화시 on_activate 즉시 호출)
     """
     def __init__(self, master, on_activate: Optional[Callable[[Path], None]] = None,
                  thumb_size: int = 160, cols: int = 5, height: int = 220):
@@ -72,19 +73,17 @@ class ThumbGallery(ttk.Frame):
 
         # ✅ 전역 휠 바인딩: 항상 켜둠(포인터 가드로 범위 제한)
         self._install_global_wheel()
-        # ✅ 전역 클릭 캐처: 항상 켜둠(포인터 가드로 범위 제한)
-        self._install_global_click()
+        # ✅ 키보드 네비게이션 바인딩(포인터 가드 또는 포커스 가드)
+        self._install_keyboard_nav()
 
         # state
         self._tiles: Dict[Path, tk.Frame] = {}
         self._imgs: Dict[Path, ImageTk.PhotoImage] = {}
         self._active: Optional[Path] = None
+        self._order: List[Path] = []   # 인덱스 → Path 매핑
 
         self._default_anchor: Tuple[float, float] = (0.5, 0.5)
         self._img_anchor_map: Dict[Path, Tuple[float, float]] = {}
-
-        # 클릭 타겟 역추적용: widget-id -> path
-        self._widget_to_path: Dict[int, Path] = {}
 
     # ---------- public API ----------
 
@@ -93,7 +92,7 @@ class ThumbGallery(ttk.Frame):
             w.destroy()
         self._tiles.clear()
         self._imgs.clear()
-        self._widget_to_path.clear()
+        self._order.clear()
         self._active = None
         self._update_scroll()
 
@@ -105,25 +104,35 @@ class ThumbGallery(ttk.Frame):
         self._img_anchor_map = dict(img_anchor_map or {})
         if not files:
             return
+
+        self._order = list(files)
         size, pad = self.thumb_size, 8
 
         for i, p in enumerate(files):
             r, c = divmod(i, self.cols)
-            tile = tk.Frame(self.inner, bd=1, relief="groove")
+            tile = tk.Frame(self.inner, bd=1, relief="groove", takefocus=1)
             tile.grid(row=r, column=c, padx=pad, pady=pad, sticky="nsew")
 
             tkim = self._make_thumb_with_overlay(p, size)
-            lbl_img = tk.Label(tile, image=tkim)
+            lbl_img = tk.Label(tile, image=tkim, takefocus=0)
             lbl_img.image = tkim
             self._imgs[p] = tkim
             lbl_img.pack(padx=4, pady=(4, 0))
 
-            lbl_txt = tk.Label(tile, text=p.name, wraplength=size, justify="center")
+            lbl_txt = tk.Label(tile, text=p.name, wraplength=size, justify="center", takefocus=0)
             lbl_txt.pack(padx=4, pady=(2, 6))
 
-            # ✅ 클릭 역추적용 매핑(타일/이미지/텍스트 모두)
+            def _activate(_=None, path=p):
+                # 클릭 시: 선택 + on_activate + 포커스 부여(방향키 사용 가능)
+                self.set_active(path, fire=True)
+                try:
+                    self.focus_set()
+                except Exception:
+                    pass
+
+            # ✅ 단일 클릭 활성화(타일/이미지/텍스트 모두)
             for w in (tile, lbl_img, lbl_txt):
-                self._widget_to_path[id(w)] = p
+                w.bind("<Button-1>", _activate)
 
             self._tiles[p] = tile
 
@@ -131,12 +140,18 @@ class ThumbGallery(ttk.Frame):
             self.inner.grid_columnconfigure(c, weight=1)
         self._update_scroll()
 
-    def set_active(self, path: Optional[Path]):
+    def set_active(self, path: Optional[Path], fire: bool = False):
+        # 이전 스타일 복구
         if self._active and self._active in self._tiles:
             self._tiles[self._active].configure(bd=1, relief="groove")
+
         self._active = path
+
         if path and path in self._tiles:
             self._tiles[path].configure(bd=2, relief="solid")
+            self._scroll_into_view(path)
+            if fire and callable(self.on_activate):
+                self.on_activate(path)
 
     def set_badged(self, paths: set[Path]):
         pass  # 현재는 개별 앵커 보유 시 자동 배지
@@ -186,6 +201,26 @@ class ThumbGallery(ttk.Frame):
     def _update_scroll(self):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
+    def _scroll_into_view(self, path: Path):
+        """선택 타일이 보이도록 스크롤 조정."""
+        try:
+            self.update_idletasks()
+            tile = self._tiles.get(path)
+            if not tile:
+                return
+            tile_y = tile.winfo_y()
+            tile_h = tile.winfo_height()
+            inner_h = max(1, self.inner.winfo_height())
+            can_h = self.canvas.winfo_height()
+            top = self.canvas.canvasy(0)
+            bottom = top + can_h
+            if tile_y < top:
+                self.canvas.yview_moveto(tile_y / inner_h)
+            elif tile_y + tile_h > bottom:
+                self.canvas.yview_moveto((tile_y + tile_h - can_h) / inner_h)
+        except Exception:
+            pass
+
     # ---------- wheel handling (always-on bind_all + pointer guard) ----------
 
     def _install_global_wheel(self):
@@ -210,6 +245,7 @@ class ThumbGallery(ttk.Frame):
     def _on_wheel(self, e):
         if not self._pointer_inside_me(e):
             return
+        # delta를 단위 스텝으로 변환(트랙패드 연속 스크롤 대응)
         delta = e.delta
         steps = int(abs(delta) / 120) if abs(delta) >= 120 else 1
         direction = -1 if delta > 0 else 1
@@ -228,26 +264,101 @@ class ThumbGallery(ttk.Frame):
         self.canvas.yview_scroll(+3, "units")
         return "break"
 
-    # ---------- click handling (always-on bind_all + pointer guard) ----------
+    # ---------- keyboard navigation (bind_all + pointer/focus guard) ----------
 
-    def _install_global_click(self):
+    def _install_keyboard_nav(self):
         root = self.winfo_toplevel()
-        root.bind_all("<Button-1>", self._on_any_click, add="+")
-        # (드래그가 섞여도 한 번은 확실히 타도록 릴리즈도 보조)
-        root.bind_all("<ButtonRelease-1>", self._on_any_click, add="+")
+        for seq, handler in (
+            ("<Left>", self._on_left),
+            ("<Right>", self._on_right),
+            ("<Up>", self._on_up),
+            ("<Down>", self._on_down),
+            ("<Home>", self._on_home),
+            ("<End>", self._on_end),
+        ):
+            root.bind_all(seq, handler, add="+")
 
-    def _on_any_click(self, e):
-        if not self._pointer_inside_me(e):
+    def _has_focus_within(self) -> bool:
+        try:
+            w = self.focus_get()
+            while w is not None:
+                if w is self:
+                    return True
+                w = w.master
+        except Exception:
+            pass
+        return False
+
+    def _kbd_guard(self, e) -> bool:
+        # 마우스가 갤러리 위에 있거나, 갤러리가 포커스를 가지고 있을 때만 키 처리
+        return self._pointer_inside_me(e) or self._has_focus_within()
+
+    def _index_of(self, path: Optional[Path]) -> int:
+        if path is None:
+            return -1
+        try:
+            return self._order.index(path)
+        except ValueError:
+            return -1
+
+    def _select_by_index(self, idx: int):
+        if not self._order:
             return
-        # 포인터 아래 위젯에서 타일/라벨을 거슬러 올라가며 path를 찾음
-        w = self.winfo_containing(e.x_root, e.y_root)
-        while w is not None:
-            path = self._widget_to_path.get(id(w))
-            if path is not None:
-                if path != self._active:
-                    self.set_active(path)
-                if callable(self.on_activate):
-                    # 같은 이벤트 루프 끝으로 미뤄 경합 방지
-                    self.after_idle(lambda p=path: self.on_activate(p))
-                return "break"
-            w = w.master
+        if idx < 0 or idx >= len(self._order):
+            return
+        self.set_active(self._order[idx], fire=True)
+
+    def _move_selection(self, dc: int, dr: int):
+        """열/행 변화량으로 이동(범위 밖이면 무시, 래핑 없음)."""
+        if not self._order:
+            return
+        cur_idx = self._index_of(self._active)
+        if cur_idx == -1:
+            # 아직 아무것도 선택 안 되어 있으면 첫 항목 선택
+            self._select_by_index(0)
+            return
+        cols = self.cols
+        r, c = divmod(cur_idx, cols)
+        nr, nc = r + dr, c + dc
+        if nr < 0 or nc < 0 or nc >= cols:
+            return
+        nidx = nr * cols + nc
+        if 0 <= nidx < len(self._order):
+            self._select_by_index(nidx)
+
+    # 키 핸들러들
+    def _on_left(self, e):
+        if not self._kbd_guard(e):
+            return
+        self._move_selection(dc=-1, dr=0)
+        return "break"
+
+    def _on_right(self, e):
+        if not self._kbd_guard(e):
+            return
+        self._move_selection(dc=+1, dr=0)
+        return "break"
+
+    def _on_up(self, e):
+        if not self._kbd_guard(e):
+            return
+        self._move_selection(dc=0, dr=-1)
+        return "break"
+
+    def _on_down(self, e):
+        if not self._kbd_guard(e):
+            return
+        self._move_selection(dc=0, dr=+1)
+        return "break"
+
+    def _on_home(self, e):
+        if not self._kbd_guard(e):
+            return
+        self._select_by_index(0)
+        return "break"
+
+    def _on_end(self, e):
+        if not self._kbd_guard(e):
+            return
+        self._select_by_index(len(self._order) - 1)
+        return "break"
