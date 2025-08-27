@@ -58,6 +58,7 @@ htmlcov/
 .dmypy.json
 .pyright/
 *.spec
+settings.json
 
 # 주피터
 .ipynb_checkpoints/
