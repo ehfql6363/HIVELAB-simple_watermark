@@ -58,6 +58,19 @@ class MainWindow(BaseTk):
         self._on_options_changed()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def _on_post_wmtext_change(self, key: str, new_text: str):
+        """
+        게시물 리스트 인라인 편집이 끝났을 때 호출됨.
+        - 미리보기 갱신
+        - 갤러리/오버레이는 그대로 두되, 현재 선택 게시물이면 after-image 재계산
+        """
+        # 선택이 바뀌지 않게 현재 키 유지한 채 미리보기만 갱신
+        if key and key in self.posts:
+            # 이미 선택된 게시물이라면 즉시 미리보기 반영
+            sel_key = self.post_list.get_selected_post()
+            if sel_key == key:
+                self.on_preview()
+
     def _make_roots_signature(self) -> tuple:
         """루트 경로/워터마크 텍스트 + 드롭 이미지 목록으로 변경 여부 판단"""
         try:
@@ -134,7 +147,12 @@ class MainWindow(BaseTk):
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
 
-        self.post_list = PostList(mid, on_select=self.on_select_post)
+        self.post_list = PostList(
+            mid,
+            on_select=self.on_select_post,
+            resolve_wm=lambda meta: self.controller.resolve_wm_for_meta(meta, self.app_settings),  # ★ 표시용
+            on_wmtext_change=self._on_post_wmtext_change,  # ★ 편집 반영
+        )
         mid.add(self.post_list, weight=1)
 
         right = ttk.PanedWindow(mid, orient=tk.VERTICAL)
