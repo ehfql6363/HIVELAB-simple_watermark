@@ -107,6 +107,7 @@ class MainWindow(BaseTk):
     def _build_header(self, parent):
         self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
         self.opt.pack(fill="x", pady=(0, 6))
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(6, 4))
 
     def _on_apply_all(self, anchor):
         key = self.post_list.get_selected_post()

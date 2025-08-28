@@ -374,30 +374,20 @@ class PreviewPane(ttk.Frame):
         self.var_stroke_w = tk.IntVar(value=2)
         self.var_font = tk.StringVar(value="")
 
-        # helper: 스와치 생성/업데이트
-        def _make_swatch(parent, hex_color: str):
-            sw = tk.Label(parent, text="  ", relief="groove", bd=1, width=3)
-            try:
-                sw.configure(bg=hex_color)
-            except Exception:
-                sw.configure(bg="#FFFFFF")
-            return sw
-
-        def _update_swatch(label: tk.Label, hx: str):
-            try:
-                label.configure(bg=hx)
-            except Exception:
-                label.configure(bg="#FFFFFF")
-
         # --- 레이아웃: 2열 그리드 (좌 텍스트/색, 우 수치/폰트/버튼)
         # 1행: 텍스트 전체폭
-        ttk.Label(editor, text="텍스트").grid(row=0, column=0, sticky="e", padx=(10, 6), pady=(8, 4))
-        ttk.Entry(editor, textvariable=self.var_wm_text).grid(row=0, column=1, columnspan=3, sticky="we", padx=(0, 12),
-                                                              pady=(8, 4))
+        ttk.Label(editor, text="텍스트").grid(row=0, column=0, sticky="e",
+                                           padx=(10, 6), pady=(8, 6))
+        ttk.Entry(editor, textvariable=self.var_wm_text)\
+            .grid(
+            row=0, column=1, columnspan=3,
+            sticky="we",
+            padx=(0, 14), pady=(8, 6))
 
         # 2행: 색상 (글자색/외곽선색) + 스와치
         col_frame = ttk.Frame(editor)
-        col_frame.grid(row=1, column=0, columnspan=4, sticky="we", padx=(10, 12), pady=(2, 8))
+        col_frame.grid(row=1, column=0, columnspan=4, sticky="we",
+                       padx=(10, 14), pady=(4, 10))
         col_frame.columnconfigure(1, weight=1)
         col_frame.columnconfigure(4, weight=1)
 
@@ -405,8 +395,9 @@ class PreviewPane(ttk.Frame):
         ttk.Label(col_frame, text="글자색").grid(row=0, column=0, sticky="e")
         ent_fill = ttk.Entry(col_frame, textvariable=self.var_fill, width=12)
         ent_fill.grid(row=0, column=1, sticky="w", padx=(6, 6))
-        self.sw_fill = _make_swatch(col_frame, self.var_fill.get())
+        self.sw_fill = self._make_swatch(col_frame, self.var_fill.get())
         self.sw_fill.grid(row=0, column=2, sticky="w", padx=(2, 8))
+        self.sw_fill.bind("<Button-1>", lambda e: self._pick_color(self.var_fill))
         ttk.Button(col_frame, text="선택", command=lambda: self._pick_color(self.var_fill)).grid(row=0, column=3,
                                                                                                sticky="w")
 
@@ -414,14 +405,16 @@ class PreviewPane(ttk.Frame):
         ttk.Label(col_frame, text="외곽선색").grid(row=0, column=4, sticky="e")
         ent_stroke = ttk.Entry(col_frame, textvariable=self.var_stroke, width=12)
         ent_stroke.grid(row=0, column=5, sticky="w", padx=(6, 6))
-        self.sw_stroke = _make_swatch(col_frame, self.var_stroke.get())
+        self.sw_stroke = self._make_swatch(col_frame, self.var_stroke.get())
         self.sw_stroke.grid(row=0, column=6, sticky="w", padx=(2, 8))
+        self.sw_stroke.bind("<Button-1>", lambda e: self._pick_color(self.var_stroke))
         ttk.Button(col_frame, text="선택", command=lambda: self._pick_color(self.var_stroke)).grid(row=0, column=7,
                                                                                                  sticky="w")
 
         # 3행: 수치 옵션 (불투명/스케일/외곽선 두께)
         opts = ttk.Frame(editor)
-        opts.grid(row=2, column=0, columnspan=4, sticky="we", padx=(10, 12), pady=(0, 8))
+        opts.grid(row=2, column=0, columnspan=4, sticky="we",
+                  padx=(10, 14), pady=(0, 10))
         for c in range(6): opts.columnconfigure(c, weight=1)
 
         ttk.Label(opts, text="불투명(%)").grid(row=0, column=0, sticky="e")
@@ -438,19 +431,22 @@ class PreviewPane(ttk.Frame):
 
         # 4행: 폰트 + 우측 버튼들 (적용/해제)
         frow = ttk.Frame(editor)
-        frow.grid(row=3, column=0, columnspan=4, sticky="we", padx=(10, 12), pady=(0, 10))
+        frow.grid(row=3, column=0, columnspan=4, sticky="we",
+                  padx=(10, 14), pady=(0, 12))
         frow.columnconfigure(1, weight=1)
 
         ttk.Label(frow, text="폰트").grid(row=0, column=0, sticky="e")
         ttk.Entry(frow, textvariable=self.var_font).grid(row=0, column=1, sticky="we", padx=(6, 12))
         btns = ttk.Frame(frow)
         btns.grid(row=0, column=2, sticky="e")
-        ttk.Button(btns, text="적용", command=self._apply_override).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="해제", command=self._clear_override).pack(side="left")
+        self.btn_apply = ttk.Button(btns, text="적용", command=self._apply_override)
+        self.btn_apply.pack(side="left", padx=(0, 6))
+        self.btn_clear = ttk.Button(btns, text="해제", command=self._clear_override)
+        self.btn_clear.pack(side="left")
 
         # 변수 변경 시 스와치 즉시 반영
-        self.var_fill.trace_add("write", lambda *_: _update_swatch(self.sw_fill, self.var_fill.get()))
-        self.var_stroke.trace_add("write", lambda *_: _update_swatch(self.sw_stroke, self.var_stroke.get()))
+        self.var_fill.trace_add("write", lambda *_: self._update_swatch(self.sw_fill, self.var_fill.get()))
+        self.var_stroke.trace_add("write", lambda *_: self._update_swatch(self.sw_stroke, self.var_stroke.get()))
 
         for c in range(6):
             editor.columnconfigure(c, weight=1)
@@ -472,6 +468,20 @@ class PreviewPane(ttk.Frame):
         self._apply_grid_and_visuals()
 
     # ------- 외부 API -------
+    def _make_swatch(self, parent, hex_color: str):
+        sw = tk.Canvas(parent, width=28, height=16,
+                       highlightthickness=1, highlightbackground="#AAA")
+        sw.create_rectangle(0, 0, 28, 16, outline="", fill=hex_color)
+        return sw
+
+    def _update_swatch(self, sw: tk.Canvas, hx: str):
+        try:
+            sw.delete("all")
+            sw.create_rectangle(0, 0, 28, 16, outline="", fill=hx)
+        except Exception:
+            sw.delete("all")
+            sw.create_rectangle(0, 0, 28, 16, outline="", fill="#FFFFFF")
+
     def _pick_color(self, var: tk.StringVar):
         from tkinter import colorchooser
         initial = var.get() or "#000000"
@@ -483,15 +493,24 @@ class PreviewPane(ttk.Frame):
         if not self._on_image_wm_override or not self._active_path:
             return
 
-        def _rgb(hx):
+        def _rgb(hx: str) -> Optional[tuple[int, int, int]]:
             hx = (hx or "").strip()
-            if not hx.startswith("#") or len(hx) not in (4, 7): return None
-            if len(hx) == 4:
-                r = g = b = int(hx[1] * 2, 16);
-                g = int(hx[2] * 2, 16);
-                b = int(hx[3] * 2, 16)
-                return (r, g, b)
-            return (int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16))
+            if not hx.startswith("#"):
+                return None
+            if len(hx) == 7:  # #RRGGBB
+                try:
+                    return (int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16))
+                except Exception:
+                    return None
+            if len(hx) == 4:  # #RGB
+                try:
+                    r = int(hx[1] * 2, 16)
+                    g = int(hx[2] * 2, 16)
+                    b = int(hx[3] * 2, 16)
+                    return (r, g, b)
+                except Exception:
+                    return None
+            return None
 
         ov = {
             "text": self.var_wm_text.get(),  # 빈문자 → 워터마크 없음
@@ -524,6 +543,13 @@ class PreviewPane(ttk.Frame):
         self.var_opacity.set(int(wm_cfg.get("opacity", 30)))
         self.var_scale.set(int(wm_cfg.get("scale_pct", 20)))
 
+        state = ("!disabled" if path else "disabled")
+        try:
+            self.btn_apply.state((state,))
+            self.btn_clear.state((state,))
+        except Exception:
+            pass
+
         def _fmt_rgb(rgb): return "#%02X%02X%02X" % tuple(rgb) if isinstance(rgb, (list, tuple)) and len(
             rgb) == 3 else "#000000"
 
@@ -533,11 +559,8 @@ class PreviewPane(ttk.Frame):
         self.var_font.set(wm_cfg.get("font_path", ""))
 
         try:
-            # 이미 __init__에서 만들어 둔 self.sw_fill / self.sw_stroke 사용
-            if hasattr(self, "sw_fill"):
-                self.sw_fill.configure(bg=self.var_fill.get())
-            if hasattr(self, "sw_stroke"):
-                self.sw_stroke.configure(bg=self.var_stroke.get())
+            if hasattr(self, "sw_fill"): self._update_swatch(self.sw_fill, self.var_fill.get())
+            if hasattr(self, "sw_stroke"): self._update_swatch(self.sw_stroke, self.var_stroke.get())
         except Exception:
             pass
 
