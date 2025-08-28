@@ -363,45 +363,94 @@ class PreviewPane(ttk.Frame):
 
         # ------- 개별 이미지 워터마크 에디터 -------
         editor = ttk.LabelFrame(self, text="개별 이미지 워터마크")
-        editor.pack(fill="x", padx=0, pady=(4, 0))
+        editor.pack(fill="x", padx=0, pady=(6, 0))
 
+        # 상태 변수
         self.var_wm_text = tk.StringVar(value="")
         self.var_opacity = tk.IntVar(value=30)
         self.var_scale = tk.IntVar(value=20)
-        self.var_fill = tk.StringVar(value="#000000")
-        self.var_stroke = tk.StringVar(value="#FFFFFF")
+        self.var_fill = tk.StringVar(value="#000000")  # 글자색
+        self.var_stroke = tk.StringVar(value="#FFFFFF")  # 외곽선색
         self.var_stroke_w = tk.IntVar(value=2)
         self.var_font = tk.StringVar(value="")
 
-        # 1행: 텍스트
-        ttk.Label(editor, text="텍스트").grid(row=0, column=0, sticky="e", padx=(6, 4), pady=4)
-        ttk.Entry(editor, textvariable=self.var_wm_text, width=52).grid(row=0, column=1, columnspan=5, sticky="we",
-                                                                        pady=4)
+        # helper: 스와치 생성/업데이트
+        def _make_swatch(parent, hex_color: str):
+            sw = tk.Label(parent, text="  ", relief="groove", bd=1, width=3)
+            try:
+                sw.configure(bg=hex_color)
+            except Exception:
+                sw.configure(bg="#FFFFFF")
+            return sw
 
-        # 2행: 불투명/스케일/외곽선두께
-        ttk.Label(editor, text="불투명").grid(row=1, column=0, sticky="e")
-        ttk.Spinbox(editor, from_=0, to=100, textvariable=self.var_opacity, width=5).grid(row=1, column=1, sticky="w")
-        ttk.Label(editor, text="스케일%").grid(row=1, column=2, sticky="e")
-        ttk.Spinbox(editor, from_=1, to=50, textvariable=self.var_scale, width=5).grid(row=1, column=3, sticky="w")
-        ttk.Label(editor, text="외곽선").grid(row=1, column=4, sticky="e")
-        ttk.Spinbox(editor, from_=0, to=20, textvariable=self.var_stroke_w, width=5).grid(row=1, column=5, sticky="w")
+        def _update_swatch(label: tk.Label, hx: str):
+            try:
+                label.configure(bg=hx)
+            except Exception:
+                label.configure(bg="#FFFFFF")
 
-        # 3행: 색상/폰트
-        ttk.Label(editor, text="전경색").grid(row=2, column=0, sticky="e")
-        e_fill = ttk.Entry(editor, textvariable=self.var_fill, width=10);
-        e_fill.grid(row=2, column=1, sticky="w")
-        ttk.Button(editor, text="선택", command=lambda: self._pick_color(self.var_fill)).grid(row=2, column=2, sticky="w",
-                                                                                            padx=(2, 6))
-        ttk.Label(editor, text="외곽선색").grid(row=2, column=3, sticky="e")
-        e_st = ttk.Entry(editor, textvariable=self.var_stroke, width=10);
-        e_st.grid(row=2, column=4, sticky="w")
-        ttk.Button(editor, text="선택", command=lambda: self._pick_color(self.var_stroke)).grid(row=2, column=5,
-                                                                                              sticky="w", padx=(2, 6))
+        # --- 레이아웃: 2열 그리드 (좌 텍스트/색, 우 수치/폰트/버튼)
+        # 1행: 텍스트 전체폭
+        ttk.Label(editor, text="텍스트").grid(row=0, column=0, sticky="e", padx=(10, 6), pady=(8, 4))
+        ttk.Entry(editor, textvariable=self.var_wm_text).grid(row=0, column=1, columnspan=3, sticky="we", padx=(0, 12),
+                                                              pady=(8, 4))
 
-        ttk.Label(editor, text="폰트").grid(row=3, column=0, sticky="e")
-        ttk.Entry(editor, textvariable=self.var_font, width=46).grid(row=3, column=1, columnspan=4, sticky="we")
-        ttk.Button(editor, text="적용", command=self._apply_override).grid(row=3, column=5, sticky="w", padx=(4, 0))
-        ttk.Button(editor, text="해제", command=self._clear_override).grid(row=3, column=6, sticky="w")
+        # 2행: 색상 (글자색/외곽선색) + 스와치
+        col_frame = ttk.Frame(editor)
+        col_frame.grid(row=1, column=0, columnspan=4, sticky="we", padx=(10, 12), pady=(2, 8))
+        col_frame.columnconfigure(1, weight=1)
+        col_frame.columnconfigure(4, weight=1)
+
+        # 글자색
+        ttk.Label(col_frame, text="글자색").grid(row=0, column=0, sticky="e")
+        ent_fill = ttk.Entry(col_frame, textvariable=self.var_fill, width=12)
+        ent_fill.grid(row=0, column=1, sticky="w", padx=(6, 6))
+        self.sw_fill = _make_swatch(col_frame, self.var_fill.get())
+        self.sw_fill.grid(row=0, column=2, sticky="w", padx=(2, 8))
+        ttk.Button(col_frame, text="선택", command=lambda: self._pick_color(self.var_fill)).grid(row=0, column=3,
+                                                                                               sticky="w")
+
+        # 외곽선색
+        ttk.Label(col_frame, text="외곽선색").grid(row=0, column=4, sticky="e")
+        ent_stroke = ttk.Entry(col_frame, textvariable=self.var_stroke, width=12)
+        ent_stroke.grid(row=0, column=5, sticky="w", padx=(6, 6))
+        self.sw_stroke = _make_swatch(col_frame, self.var_stroke.get())
+        self.sw_stroke.grid(row=0, column=6, sticky="w", padx=(2, 8))
+        ttk.Button(col_frame, text="선택", command=lambda: self._pick_color(self.var_stroke)).grid(row=0, column=7,
+                                                                                                 sticky="w")
+
+        # 3행: 수치 옵션 (불투명/스케일/외곽선 두께)
+        opts = ttk.Frame(editor)
+        opts.grid(row=2, column=0, columnspan=4, sticky="we", padx=(10, 12), pady=(0, 8))
+        for c in range(6): opts.columnconfigure(c, weight=1)
+
+        ttk.Label(opts, text="불투명(%)").grid(row=0, column=0, sticky="e")
+        ttk.Spinbox(opts, from_=0, to=100, textvariable=self.var_opacity, width=6).grid(row=0, column=1, sticky="w",
+                                                                                        padx=(6, 12))
+
+        ttk.Label(opts, text="스케일(%)").grid(row=0, column=2, sticky="e")
+        ttk.Spinbox(opts, from_=1, to=50, textvariable=self.var_scale, width=6).grid(row=0, column=3, sticky="w",
+                                                                                     padx=(6, 12))
+
+        ttk.Label(opts, text="외곽선 두께").grid(row=0, column=4, sticky="e")
+        ttk.Spinbox(opts, from_=0, to=20, textvariable=self.var_stroke_w, width=6).grid(row=0, column=5, sticky="w",
+                                                                                        padx=(6, 0))
+
+        # 4행: 폰트 + 우측 버튼들 (적용/해제)
+        frow = ttk.Frame(editor)
+        frow.grid(row=3, column=0, columnspan=4, sticky="we", padx=(10, 12), pady=(0, 10))
+        frow.columnconfigure(1, weight=1)
+
+        ttk.Label(frow, text="폰트").grid(row=0, column=0, sticky="e")
+        ttk.Entry(frow, textvariable=self.var_font).grid(row=0, column=1, sticky="we", padx=(6, 12))
+        btns = ttk.Frame(frow)
+        btns.grid(row=0, column=2, sticky="e")
+        ttk.Button(btns, text="적용", command=self._apply_override).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="해제", command=self._clear_override).pack(side="left")
+
+        # 변수 변경 시 스와치 즉시 반영
+        self.var_fill.trace_add("write", lambda *_: _update_swatch(self.sw_fill, self.var_fill.get()))
+        self.var_stroke.trace_add("write", lambda *_: _update_swatch(self.sw_stroke, self.var_stroke.get()))
 
         for c in range(6):
             editor.columnconfigure(c, weight=1)
@@ -482,6 +531,15 @@ class PreviewPane(ttk.Frame):
         self.var_stroke.set(_fmt_rgb(wm_cfg.get("stroke", (255, 255, 255))))
         self.var_stroke_w.set(int(wm_cfg.get("stroke_w", 2)))
         self.var_font.set(wm_cfg.get("font_path", ""))
+
+        try:
+            # 이미 __init__에서 만들어 둔 self.sw_fill / self.sw_stroke 사용
+            if hasattr(self, "sw_fill"):
+                self.sw_fill.configure(bg=self.var_fill.get())
+            if hasattr(self, "sw_stroke"):
+                self.sw_stroke.configure(bg=self.var_stroke.get())
+        except Exception:
+            pass
 
     def set_wm_preview_config(self, cfg: Optional[Dict]):
         # 빈 텍스트면 유령도 안 뜨도록 _CheckerCanvas에서 처리
