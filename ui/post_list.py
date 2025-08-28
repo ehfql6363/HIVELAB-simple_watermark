@@ -34,14 +34,21 @@ class PostList(ttk.Frame):
         box = ttk.LabelFrame(self, text="게시물")
         box.pack(fill="both", expand=True)
 
-        cols = ("name", "wm_text")
-        self.tree = ttk.Treeview(box, columns=cols, show="tree headings", height=16)
-        self.tree.heading("name", text="이름")
-        self.tree.heading("wm_text", text="워터마크 텍스트 (더블 클릭 편집)")
-        self.tree.column("#0", width=0, stretch=False)  # 내부트리 열은 숨김
-        self.tree.column("name", width=340)
+        cols = ("wm_text",)
+        self.tree = ttk.Treeview(
+            box,
+            columns=cols,
+            show="tree headings",
+            height=16
+        )
+        # #0 열 (트리 전용) 활성화
+        self.tree.heading("#0", text="이름")
+        self.tree.column("#0", width=340)
+        # 워터마크 텍스트 열
+        self.tree.heading("wm_text", text="워터마크 텍스트")
         self.tree.column("wm_text", width=260)
-        self.tree.pack(side="left", fill="both", expand=True, padx=(6,0), pady=6)
+
+        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
 
         sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=sb.set); sb.pack(side="right", fill="y")
@@ -72,14 +79,27 @@ class PostList(ttk.Frame):
         # 루트 노드 → 게시물(leaf) 노드
         for root_key in sorted(groups.keys(), key=lambda s: Path(s).name.lower()):
             root_disp = "이미지" if root_key == IMAGES_VROOT else Path(root_key).name
-            rid = self.tree.insert("", "end", text="", values=(root_disp, ""), open=True)
+            rid = self.tree.insert(
+                "",
+                "end",
+                text="📂 " + root_disp,  # 트리 전용열(#0)에 표시
+                values=("",),
+                open=True
+            )
             self._root_nodes[root_key] = rid
 
             # 루트 바로 아래 게시물들
-            for key, meta in sorted(groups[root_key], key=lambda kv: kv[0].lower()):
+            for i, (key, meta) in enumerate(sorted(groups[root_key], key=lambda kv: kv[0].lower())):
                 post_name = meta.get("post_name") or Path(key).name
                 wm_text = self.resolve_wm(meta)
-                iid = self.tree.insert(rid, "end", text="", values=(post_name, wm_text))
+                # ├/└ 접두사 추가 (마지막이면 └, 아니면 ├)
+                prefix = "└ " if i == len(groups[root_key]) - 1 else "├ "
+                iid = self.tree.insert(
+                    rid,
+                    "end",
+                    text=prefix + post_name,
+                    values=(wm_text,)
+                )
                 self._iid_to_key[iid] = key
 
     def select_key(self, key: str):
