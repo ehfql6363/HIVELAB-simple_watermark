@@ -45,15 +45,15 @@ class PostList(ttk.Frame):
             box,
             columns=cols,
             show="tree headings",
-            height=16,
+            height=8,
             selectmode="browse"
         )
         # #0 열(트리 전용: 이름 표시)
         self.tree.heading("#0", text="이름")
-        self.tree.column("#0", width=340, stretch=True)
+        self.tree.column("#0", width=240, stretch=True)
         # 워터마크 텍스트 열
         self.tree.heading("wm_text", text="워터마크 텍스트")
-        self.tree.column("wm_text", width=260, anchor="w", stretch=True)
+        self.tree.column("wm_text", width=50, anchor="w", stretch=True)
 
         self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
 

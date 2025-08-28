@@ -6,6 +6,7 @@ from pathlib import Path
 from tkinter import ttk, messagebox
 from typing import Dict, Optional
 import threading
+from ui.image_wm_editor import ImageWMEditor
 
 from controller import AppController
 from settings import AppSettings, DEFAULT_SIZES, DEFAULT_WM_TEXT, hex_to_rgb
@@ -57,6 +58,29 @@ class MainWindow(BaseTk):
 
         self._on_options_changed()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # MainWindow 내부에 추가
+
+    def _on_image_wm_override(self, path: Path, ov: dict):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts: return
+        meta = self.posts[key]
+        overrides = meta.get("img_overrides") or {}
+        overrides[path] = ov
+        meta["img_overrides"] = overrides
+        # 프리뷰 갱신
+        self.on_preview()
+
+    def _on_image_wm_clear(self, path: Path):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts: return
+        meta = self.posts[key]
+        overrides = meta.get("img_overrides") or {}
+        if path in overrides:
+            del overrides[path]
+            if not overrides: meta["img_overrides"] = {}
+        # 프리뷰 갱신
+        self.on_preview()
 
     def _on_post_wmtext_change(self, key: str, new_text: str):
         """
@@ -148,14 +172,22 @@ class MainWindow(BaseTk):
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True)
 
-        self.post_list = PostList(
-            mid,
-            on_select=self.on_select_post,
-            resolve_wm=lambda meta: self.controller.resolve_wm_for_meta(meta, self.app_settings),
-            on_wmtext_change=self._on_post_wmtext_change,
-        )
-        mid.add(self.post_list, weight=1)
+        # ← 좌측: 게시물 + (아래) 개별 에디터
+        left = ttk.PanedWindow(mid, orient=tk.VERTICAL)
+        mid.add(left, weight=1)
 
+        self.post_list = PostList(left, on_select=self.on_select_post)
+        left.add(self.post_list, weight=3)
+
+        # 새 에디터 생성 (콜백 연결)
+        self.wm_editor = ImageWMEditor(
+            left,
+            on_apply=self._on_image_wm_override,
+            on_clear=self._on_image_wm_clear
+        )
+        left.add(self.wm_editor, weight=2)
+
+        # → 오른쪽: 프리뷰 + 갤러리
         right = ttk.PanedWindow(mid, orient=tk.VERTICAL)
         mid.add(right, weight=4)
 
@@ -164,12 +196,20 @@ class MainWindow(BaseTk):
             pre_frame,
             on_anchor_change=self._on_anchor_change,
             on_apply_all=self._on_apply_all,
-            on_clear_individual=self._on_clear_individual,
-            on_image_wm_override=self._on_image_wm_override,
-            on_image_wm_clear=self._on_image_wm_clear,
+            on_clear_individual=self._on_clear_individual
         )
         self.preview.pack(fill="both", expand=True)
         right.add(pre_frame, weight=5)
+
+        gal_frame = ttk.Frame(right)
+        gal_frame.pack_propagate(False)
+        self.gallery = ThumbGallery(
+            gal_frame,
+            on_activate=self._on_activate_image,
+            thumb_size=168, cols=6, height=240
+        )
+        self.gallery.pack(fill="x", expand=False)
+        right.add(gal_frame, weight=1)
 
         gal_frame = ttk.Frame(right)
         gal_frame.pack_propagate(False)
@@ -295,14 +335,19 @@ class MainWindow(BaseTk):
             default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
             img_map = meta.get("img_anchors") or {}
             self.gallery.set_files(files, default_anchor=default_anchor, img_anchor_map=img_map)
-            self._refresh_gallery_overlay(key)
             self.gallery.set_active(None)
             self._wm_anchor = default_anchor
+            self.wm_editor.set_active_image_and_defaults(None, None)
             self.on_preview()
 
     def _on_activate_image(self, path: Path):
         self._active_src = path
         self.gallery.set_active(path)
+        key = self.post_list.get_selected_post()
+        meta = self.posts.get(key, {})
+        overrides = (meta or {}).get("img_overrides") or {}
+        cfg = overrides.get(path)  # dict or None
+        self.wm_editor.set_active_image_and_defaults(path, cfg)
         self.on_preview()
 
     def on_preview(self):
