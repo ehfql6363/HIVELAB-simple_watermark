@@ -27,16 +27,16 @@ def _draw_anchor_marker(square_img: Image.Image, content_box: Tuple[int,int,int,
     d.ellipse((cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1), fill=(255, 255, 255, 230))
     d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(color[0], color[1], color[2], 230))
 
-def _draw_badge(square_img: Image.Image, text="•", bg=(76,175,80), fg=(255,255,255)):
+def _draw_badge(square_img: Image.Image, text="•", bg=(76,175,80), fg=(255,255,255), pos="tr"):
     W, H = square_img.size
     r = 9
-    cx, cy = W - r - 6, r + 6
+    if pos == "tr":  cx, cy = W - r - 6, r + 6     # top-right
+    elif pos == "tl": cx, cy = r + 6, r + 6        # top-left
+    else: cx, cy = W - r - 6, r + 6
     d = ImageDraw.Draw(square_img, "RGBA")
     d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(bg[0], bg[1], bg[2], 255))
-    try:
-        font = ImageFont.truetype("arial.ttf", 12)
-    except Exception:
-        font = ImageFont.load_default()
+    try: font = ImageFont.truetype("arial.ttf", 12)
+    except Exception: font = ImageFont.load_default()
     tw, th = _measure_text_bbox(d, text, font, 0)
     d.text((cx - tw // 2, cy - th // 2 - 1), text, font=font, fill=fg)
 
@@ -142,10 +142,10 @@ class ThumbGallery(ttk.Frame):
     def set_badged(self, paths: set[Path]):
         pass
 
-    def update_anchor_overlay(self, default_anchor: Tuple[float, float],
-                              img_anchor_map: Dict[Path, Tuple[float, float]]):
+    def update_anchor_overlay(self, default_anchor, img_anchor_map, style_override_set=None):
         self._default_anchor = tuple(default_anchor)
         self._img_anchor_map = dict(img_anchor_map or {})
+        self._style_override_set = set(style_override_set or set())  # ★ 추가 보관
         for p, tile in self._tiles.items():
             if p in self._imgs:
                 self._imgs[p] = self._make_thumb_with_overlay(p, self.thumb_size)
@@ -173,8 +173,9 @@ class ThumbGallery(ttk.Frame):
         anchor = self._img_anchor_map.get(path, self._default_anchor)
         _draw_anchor_marker(bg, content_box, anchor, color=(30, 144, 255), radius=6)
         if path in self._img_anchor_map:
-            _draw_badge(bg, text="•", bg=(76, 175, 80), fg=(255, 255, 255))
-
+            _draw_badge(bg, text="•", bg=(76, 175, 80), fg=(255, 255, 255), pos="tr")  # 초록점
+        if getattr(self, "_style_override_set", None) and path in self._style_override_set:
+            _draw_badge(bg, text="•", bg=(255, 152, 0), fg=(255, 255, 255), pos="tl")  # 주황점
         return ImageTk.PhotoImage(bg.convert("RGB"))
 
     # ---------- scroll plumbing ----------
