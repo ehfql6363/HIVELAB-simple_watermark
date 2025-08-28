@@ -43,60 +43,51 @@ def save_image(
     exif: Optional[bytes] = None,
     extra_params: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """
-    고속 저장 함수.
-    - JPEG: quality(기본 90), optimize=False, progressive=False 로 속도↑
-    - PNG 등 다른 확장자는 Pillow 기본 저장
-    - 저장 전 폴더 자동 생성
-    - RGBA → JPEG 시 RGB로 자동 변환
-
-    Parameters
-    ----------
-    img : PIL.Image.Image
-    dst : Path
-        저장 경로(확장자로 포맷 결정)
-    quality : int
-        JPEG 품질(속도/용량 균형)
-    optimize : bool
-        JPEG 최적화(느려서 기본 False 권장)
-    progressive : bool
-        프로그레시브 JPEG(느려서 기본 False 권장)
-    exif : bytes | None
-        원본 EXIF 유지 시 전달
-    extra_params : dict | None
-        포맷별 세부 옵션 추가(필요시)
-    """
     dst.parent.mkdir(parents=True, exist_ok=True)
     fmt = (dst.suffix or "").lower().lstrip(".")
     params: Dict[str, Any] = dict(extra_params or {})
 
     if fmt in ("jpg", "jpeg"):
-        # JPEG 파라미터
         params.setdefault("quality", int(quality))
         params.setdefault("optimize", bool(optimize))
         params.setdefault("progressive", bool(progressive))
-        # 속도 위해 subsampling은 Pillow 기본(대개 4:2:0)을 그대로 사용
         if exif:
             params["exif"] = exif
         if img.mode in ("RGBA", "LA"):
             img = img.convert("RGB")
         img.save(str(dst), format="JPEG", **params)
+
     elif fmt == "png":
-        # PNG는 기본 저장(필요하면 compress_level 등 조정 가능)
-        if exif:
-            try:
-                params["pnginfo"] = exif  # PNG EXIF는 제한적(무시될 수 있음)
-            except Exception:
-                pass
+        # PNG는 EXIF를 일반적으로 유지하지 않으므로 별도 처리 안 함
+        # (필요 시 PngInfo로 주입해야 하나 대부분 워크플로우에선 불필요)
         img.save(str(dst), format="PNG", **params)
+
     else:
-        # 확장자 인식 불가 → JPEG로 강제 저장
+        # 알 수 없는 확장자 → JPEG 저장
         if img.mode in ("RGBA", "LA"):
             img = img.convert("RGB")
         params.setdefault("quality", int(quality))
         params.setdefault("optimize", bool(optimize))
         params.setdefault("progressive", bool(progressive))
         img.save(str(dst.with_suffix(".jpg")), format="JPEG", **params)
+
+def save_jpeg(
+    img: Image.Image,
+    path: Path,
+    quality: int = 90,
+    icc: bytes | None = None,
+    exif: bytes | None = None
+):
+    """
+    JPEG 저장 전용 유틸(선택 사용). 확장자 강제 .jpg.
+    """
+    if path.suffix.lower() not in (".jpg", ".jpeg"):
+        path = path.with_suffix(".jpg")
+    extra: Dict[str, Any] = {}
+    if icc:
+        # Pillow는 'icc_profile' 키로 받음
+        extra["icc_profile"] = icc
+    save_image(img, path, quality=quality, exif=exif, extra_params=extra)
 
 def save_jpeg(
     img: Image.Image,

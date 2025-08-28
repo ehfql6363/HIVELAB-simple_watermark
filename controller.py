@@ -6,6 +6,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Tuple, Callable, Optional
+import threading
 
 from PIL import Image
 
@@ -23,6 +24,7 @@ class AppController:
         self._processed = 0
         self._canvas_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
         self._canvas_cache_limit = 64
+        self._cache_lock = threading.Lock()
 
     def _flat_output_dir(self, out_root: Path) -> Path:
         """
@@ -127,19 +129,23 @@ class AppController:
 
     def _get_resized_canvas(self, src: Path, target: Tuple[int, int], bg_rgb: Tuple[int, int, int]) -> Image.Image:
         key = self._canvas_key(src, target, bg_rgb)
-        if key in self._canvas_cache:
-            im = self._canvas_cache.pop(key)
-            self._canvas_cache[key] = im
-            return im
+        with self._cache_lock:
+            if key in self._canvas_cache:
+                im = self._canvas_cache.pop(key)
+                self._canvas_cache[key] = im
+                return im
 
         base = load_image(src)  # RGB Image 보장
         if not isinstance(base, Image.Image):
             raise ValueError(f"이미지 로드 실패(타입 불일치): {src}")
 
         canvas = base if tuple(target) == (0, 0) else resize_contain(base, target, bg_rgb)
-        self._canvas_cache[key] = canvas
-        if len(self._canvas_cache) > self._canvas_cache_limit:
-            self._canvas_cache.popitem(last=False)
+
+        with self._cache_lock:
+            self._canvas_cache[key] = canvas
+            if len(self._canvas_cache) > self._canvas_cache_limit:
+                self._canvas_cache.popitem(last=False)
+
         return canvas
 
     # ---------- 미리보기 ----------

@@ -158,7 +158,8 @@ class ThumbGallery(ttk.Frame):
 
     def _make_thumb_with_overlay(self, path: Path, size: int) -> ImageTk.PhotoImage:
         try:
-            im = Image.open(path).convert("RGB")
+            with Image.open(path) as im_src:
+                im = im_src.convert("RGB").copy()  # ← 복사 후 원본 핸들 닫힘
             im.thumbnail((size, size), Image.Resampling.LANCZOS)
             bg = Image.new("RGBA", (size, size), (245, 245, 245, 255))
             ox = (size - im.width) // 2
