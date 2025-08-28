@@ -4,18 +4,21 @@ from __future__ import annotations
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox
-from typing import Dict, Optional
-import threading
-from ui.image_wm_editor import ImageWMEditor
+from typing import Dict, Optional, Tuple
 
 from controller import AppController
-from settings import AppSettings, DEFAULT_SIZES, DEFAULT_WM_TEXT, hex_to_rgb
+from settings import AppSettings, DEFAULT_WM_TEXT, hex_to_rgb, RootConfig, IMAGES_VROOT
 from ui.options_panel import OptionsPanel
 from ui.post_list import PostList
 from ui.preview_pane import PreviewPane
-from ui.scrollframe import ScrollFrame
-from ui.status_bar import StatusBar
 from ui.thumb_gallery import ThumbGallery
+from ui.status_bar import StatusBar
+from ui.image_wm_editor import ImageWMEditor  # ★ 분리된 에디터
+
+# 이미지 처리 유틸 (개별 오버라이드 미리보기 계산용)
+from services.image_ops import load_image
+from services.resize import resize_contain
+from services.watermark import add_text_watermark
 
 # DnD 지원 루트
 try:
@@ -27,27 +30,35 @@ except Exception:
 class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
         super().__init__()
-        self._roots_sig = None
-
         self.title("게시물 워터마크 & 리사이즈")
         self.geometry("1180x860")
+        # 창 너무 작아질 때 하단 상태바가 가려지지 않도록 최소 크기
+        try: self.minsize(1024, 720)
+        except Exception: pass
 
         self.controller = controller
         self.posts: Dict[str, dict] = {}
 
         self.app_settings = AppSettings.load()
-        self._wm_anchor = tuple(self.app_settings.wm_anchor)
+        self._wm_anchor: Tuple[float, float] = tuple(self.app_settings.wm_anchor)
         self._active_src: Optional[Path] = None
 
-        self.header = ScrollFrame(self, height=300)
-        self.header.pack(side="top", fill="x", padx=8, pady=(6, 0))
-        self._build_header(self.header.inner)
+        # 루트 시그니처(루트 목록이 바뀌면 자동 스캔 대체 등록)
+        self._roots_sig: Tuple[Tuple[str, str], ...] = tuple()
 
+        # ── 상단 옵션(출력/워터마크/루트 목록) ───────────────────────────────
+        self.header = ttk.Frame(self)
+        self.header.pack(side="top", fill="x", padx=8, pady=(8, 0))
+        self._build_header(self.header)
+
+        # ── 중간: 좌(게시물+에디터) / 우(프리뷰+썸네일) ─────────────────────
         self._build_middle(self)
 
+        # ── 하단 상태바 ───────────────────────────────────────────────────
         self.status = StatusBar(self, on_start=self.on_start_batch)
         self.status.pack(side="bottom", fill="x", padx=8, pady=8)
 
+        # 옵션 패널 초기값 채우기
         self.opt.set_initial_options(self.app_settings)
 
         if self.app_settings.output_root and not self.opt.var_output.get().strip():
@@ -56,141 +67,52 @@ class MainWindow(BaseTk):
         if self.app_settings.wm_font_path and not self.opt.var_font.get().strip():
             self.opt.var_font.set(str(self.app_settings.wm_font_path))
 
+        # 최초 옵션 반영 → 루트 변경 감지로 게시물 등록
         self._on_options_changed()
+
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # MainWindow 내부에 추가
-
-    def _on_image_wm_override(self, path: Path, ov: dict):
-        key = self.post_list.get_selected_post()
-        if not key or key not in self.posts: return
-        meta = self.posts[key]
-        overrides = meta.get("img_overrides") or {}
-        overrides[path] = ov
-        meta["img_overrides"] = overrides
-        # 프리뷰 갱신
-        self.on_preview()
-
-    def _on_image_wm_clear(self, path: Path):
-        key = self.post_list.get_selected_post()
-        if not key or key not in self.posts: return
-        meta = self.posts[key]
-        overrides = meta.get("img_overrides") or {}
-        if path in overrides:
-            del overrides[path]
-            if not overrides: meta["img_overrides"] = {}
-        # 프리뷰 갱신
-        self.on_preview()
-
-    def _on_post_wmtext_change(self, key: str, new_text: str):
-        """
-        게시물 리스트 인라인 편집이 끝났을 때 호출됨.
-        - 미리보기 갱신
-        - 갤러리/오버레이는 그대로 두되, 현재 선택 게시물이면 after-image 재계산
-        """
-        # 선택이 바뀌지 않게 현재 키 유지한 채 미리보기만 갱신
-        if key and key in self.posts:
-            # 이미 선택된 게시물이라면 즉시 미리보기 반영
-            sel_key = self.post_list.get_selected_post()
-            if sel_key == key:
-                self.on_preview()
-
-    def _make_roots_signature(self) -> tuple:
-        """루트 경로/워터마크 텍스트 + 드롭 이미지 목록으로 변경 여부 판단"""
-        try:
-            roots = self.opt.get_roots()
-        except Exception:
-            roots = []
-        try:
-            dropped = self.opt.get_dropped_images()
-        except Exception:
-            dropped = []
-
-        roots_sig = tuple(sorted((str(r.path), (r.wm_text or "")) for r in roots))
-        dropped_sig = tuple(sorted(str(p) for p in dropped))
-        return (roots_sig, dropped_sig)
-
-    def _rescan_posts(self):
-        """루트/드롭 이미지 기반으로 게시물 재구성 → 리스트/갤러리/미리보기 갱신"""
-        roots = self.opt.get_roots()
-        dropped = self.opt.get_dropped_images()
-
-        self.posts = self.controller.scan_posts_multi(roots, dropped_images=dropped)
-        self.post_list.set_posts(self.posts)
-
-        # 초기화
-        self._active_src = None
-        self.gallery.clear()
-        self.gallery.update_anchor_overlay((0.5, 0.5), {})
-
-        # 첫 게시물 자동 선택 → 미리보기 자동 표시
-        if self.posts:
-            first_key = sorted(self.posts.keys())[0]
-            self.post_list.select_key(first_key)  # on_select_post 트리거 → on_preview까지 연결
-
-    def _build_header(self, parent):
+    # ──────────────────────────────────────────────────────────────────────
+    # 빌드
+    # ──────────────────────────────────────────────────────────────────────
+    def _build_header(self, parent: ttk.Frame):
+        # 버튼바(스캔/미리보기) 제거 요구사항 반영 → 오직 옵션 패널만
         self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
-        self.opt.pack(fill="x", pady=(0, 6))
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(6, 4))
-
-    def _on_apply_all(self, anchor):
-        key = self.post_list.get_selected_post()
-        if not key or key not in self.posts:
-            return
-
-        meta = self.posts[key]
-        files = meta.get("files") or []
-        img_map = meta.get("img_anchors") or {}
-
-        meta["anchor"] = (float(anchor[0]), float(anchor[1]))
-
-        if self._active_src and self._active_src in img_map:
-            try:
-                del img_map[self._active_src]
-            except Exception:
-                pass
-            if not img_map:
-                meta["img_anchors"] = {}
-
-        self._refresh_gallery_overlay(key)
-        self._wm_anchor = meta["anchor"]
-        self.on_preview()
-
-        total = len(files)
-        overridden = len(img_map)
-        affected = max(0, total - overridden)
-        messagebox.showinfo(
-            "모든 이미지에 적용",
-            f"기본 위치를 업데이트했습니다.\n"
-            f"- 총 이미지: {total}\n"
-            f"- 개별 지정 제외: {overridden}\n"
-            f"- 적용 대상: {affected}\n"
-            f"(현재 보던 이미지는 기본 위치에 포함되었습니다.)"
-        )
+        self.opt.pack(fill="x")
 
     def _build_middle(self, parent):
+        # 가로 분할: 좌(게시물+에디터) / 우(프리뷰+썸네일)
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        mid.pack(fill="both", expand=True)
+        mid.pack(fill="both", expand=True, padx=8, pady=(8, 8))
 
-        # ← 좌측: 게시물 + (아래) 개별 에디터
+        # 좌: 세로 분할(게시물, 에디터)
         left = ttk.PanedWindow(mid, orient=tk.VERTICAL)
         mid.add(left, weight=1)
 
-        self.post_list = PostList(left, on_select=self.on_select_post)
-        left.add(self.post_list, weight=3)
+        # ── 게시물(트리) ──
+        post_frame = ttk.Frame(left)
+        self.post_list = PostList(
+            post_frame,
+            on_select=self.on_select_post,
+        )
+        self.post_list.pack(fill="both", expand=True)
+        left.add(post_frame, weight=3)
 
-        # 새 에디터 생성 (콜백 연결)
+        # ── 개별 이미지 워터마크 에디터(분리) ──
+        editor_frame = ttk.Frame(left)
         self.wm_editor = ImageWMEditor(
-            left,
+            editor_frame,
             on_apply=self._on_image_wm_override,
             on_clear=self._on_image_wm_clear
         )
-        left.add(self.wm_editor, weight=2)
+        self.wm_editor.pack(fill="x", expand=False, pady=(6, 0))
+        left.add(editor_frame, weight=2)
 
-        # → 오른쪽: 프리뷰 + 갤러리
+        # 우: 세로 분할(프리뷰, 썸네일)
         right = ttk.PanedWindow(mid, orient=tk.VERTICAL)
         mid.add(right, weight=4)
 
+        # PreviewPane
         pre_frame = ttk.Frame(right)
         self.preview = PreviewPane(
             pre_frame,
@@ -199,54 +121,72 @@ class MainWindow(BaseTk):
             on_clear_individual=self._on_clear_individual
         )
         self.preview.pack(fill="both", expand=True)
-        right.add(pre_frame, weight=5)
+        right.add(pre_frame)  # weight만 사용
 
+        # ThumbGallery
         gal_frame = ttk.Frame(right)
-        gal_frame.pack_propagate(False)
+        # pack_propagate(False) 사용 금지(0px로 눌릴 수 있음)
         self.gallery = ThumbGallery(
             gal_frame,
             on_activate=self._on_activate_image,
-            thumb_size=168, cols=6, height=240
+            thumb_size=168, cols=6, height=200  # 방법 C: 내부 높이 힌트
         )
         self.gallery.pack(fill="x", expand=False)
-        right.add(gal_frame, weight=1)
+        right.add(gal_frame)
 
-        gal_frame = ttk.Frame(right)
-        gal_frame.pack_propagate(False)
-        self.gallery = ThumbGallery(
-            gal_frame,
-            on_activate=self._on_activate_image,
-            thumb_size=168, cols=6, height=240
-        )
-        self.gallery.pack(fill="x", expand=False)
-        right.add(gal_frame, weight=1)
+        # 오른쪽 PanedWindow에 ‘사이즈 최소치’ 강제 (minsize 대용)
+        MIN_PREVIEW, MIN_GALLERY = 360, 180
+        self._right_sash_job = None
 
-        MIN_PREVIEW, MIN_GALLERY = 360, 140
-        self._sash_job = None
-
-        def _apply_minsize():
-            self._sash_job = None
+        def _apply_right_sash():
+            self._right_sash_job = None
             try:
                 total = right.winfo_height()
-                if total <= 0: return
+                if total <= 0:
+                    return
                 pos = right.sashpos(0)
-                if pos < MIN_PREVIEW: pos = MIN_PREVIEW
-                if (total - pos) < MIN_GALLERY:
-                    pos = max(total - MIN_GALLERY, MIN_PREVIEW)
+                lo = MIN_PREVIEW
+                hi = max(MIN_PREVIEW, total - MIN_GALLERY)
+                pos = min(max(pos, lo), hi)
                 if pos != right.sashpos(0):
                     right.sashpos(0, pos)
             except Exception:
                 pass
 
-        def _enforce(_=None):
-            if self._sash_job:
-                self.after_cancel(self._sash_job)
-            self._sash_job = self.after(100, _apply_minsize)
+        def _debounced_enforce(_=None):
+            if self._right_sash_job:
+                try: self.after_cancel(self._right_sash_job)
+                except Exception: pass
+            self._right_sash_job = self.after(60, _apply_right_sash)
 
-        right.bind("<Configure>", _enforce)
-        self.after(0, _apply_minsize)
+        right.bind("<Configure>", _debounced_enforce)
+        self.after(0, _apply_right_sash)
 
-    # ---- 콜백/로직 ----
+    # ──────────────────────────────────────────────────────────────────────
+    # 옵션/루트 변경 → 게시물 등록(스캔 버튼 삭제를 대체)
+    # ──────────────────────────────────────────────────────────────────────
+    def _roots_signature(self, roots: list[RootConfig]) -> Tuple[Tuple[str, str], ...]:
+        sig = []
+        for rc in roots:
+            path_str = str(rc.path)
+            wm = (rc.wm_text or "").strip()
+            sig.append((path_str, wm))
+        return tuple(sig)
+
+    def _rebuild_posts_from_roots(self):
+        roots = self.opt.get_roots()
+        dropped = self.opt.get_dropped_images()
+        self.posts = self.controller.scan_posts_multi(roots, dropped_images=dropped)
+        # 트리 갱신
+        if hasattr(self.post_list, "set_posts"):
+            self.post_list.set_posts(self.posts)
+        # 갤러리/프리뷰 초기화
+        self._active_src = None
+        self.gallery.clear()
+        self.preview.clear()
+        self.preview.set_anchor(tuple(self.app_settings.wm_anchor))
+        self.wm_editor.set_active_image_and_defaults(None, None)
+
     def _on_options_changed(self):
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
@@ -262,49 +202,161 @@ class MainWindow(BaseTk):
         s.wm_stroke_color = hex_to_rgb(wm_stroke_hex or "#FFFFFF")
         s.wm_stroke_width = int(wm_stroke_w)
         s.wm_font_path = Path(wm_font_path_str) if wm_font_path_str else None
-        if recent_out:
-            s.last_dir_output_dialog = recent_out
-        if recent_font:
-            s.last_dir_font_dialog = recent_font
-        try:
-            s.save()
-        except Exception:
-            pass
+        if recent_out: s.last_dir_output_dialog = recent_out
+        if recent_font: s.last_dir_font_dialog = recent_font
+        try: s.save()
+        except Exception: pass
 
-        sig = self._make_roots_signature()
-        prev = getattr(self, "_roots_sig", None)
-        if sig != prev:
+        # 루트 변경 감지 → 게시물 즉시 반영
+        sig = self._roots_signature(roots)
+        if sig != self._roots_sig:
             self._roots_sig = sig
-            self._rescan_posts()
+            self._rebuild_posts_from_roots()
 
-    def _on_clear_individual(self):
+    # ──────────────────────────────────────────────────────────────────────
+    # 좌측: 게시물 선택/이미지 선택
+    # ──────────────────────────────────────────────────────────────────────
+    def on_select_post(self, key: Optional[str]):
+        self._active_src = None
+        if not key or key not in self.posts:
+            self.gallery.clear()
+            self.preview.clear()
+            self.wm_editor.set_active_image_and_defaults(None, None)
+            return
+
+        meta = self.posts[key]
+        files = meta.get("files", [])
+        default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
+        img_map = meta.get("img_anchors") or {}
+        self.gallery.set_files(files, default_anchor=default_anchor, img_anchor_map=img_map)
+        self.gallery.set_active(None)
+        self._wm_anchor = default_anchor
+
+        # 새 게시물 선택 시, 에디터는 비움
+        self.wm_editor.set_active_image_and_defaults(None, None)
+        self.on_preview()
+
+    def _on_activate_image(self, path: Path):
+        self._active_src = path
+        self.gallery.set_active(path)
+
         key = self.post_list.get_selected_post()
-        if not key or key not in self.posts or not self._active_src:
-            messagebox.showinfo("개별 지정 해제", "해제할 이미지를 먼저 선택하세요.")
+        if not key or key not in self.posts:
             return
         meta = self.posts[key]
-        img_map = meta.get("img_anchors") or {}
-        if self._active_src in img_map:
-            del img_map[self._active_src]
-            if not img_map:
-                meta["img_anchors"] = {}
-            self._refresh_gallery_overlay(key)
-            self.on_preview()
-            messagebox.showinfo("개별 지정 해제", "현재 이미지가 게시물 기본 위치를 따르도록 복구되었습니다.")
+        overrides = meta.get("img_overrides") or {}
+        cfg = overrides.get(path)
+
+        # 에디터에 현재 이미지/기본값 반영
+        self.wm_editor.set_active_image_and_defaults(path, cfg)
+        self.on_preview()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 프리뷰 (개별 오버라이드 지원)
+    # ──────────────────────────────────────────────────────────────────────
+    def on_preview(self):
+        key = self.post_list.get_selected_post()
+        if not key:
+            return
+        if key not in self.posts or not self.posts[key]["files"]:
+            messagebox.showinfo("미리보기", "이 게시물에는 이미지가 없습니다.")
+            return
+
+        settings = self._collect_settings()
+        meta = self.posts[key]
+
+        # 워터마크 텍스트(루트 설정 우선)
+        _raw = meta["root"].wm_text
+        _root_txt = ("" if _raw is None else _raw.strip())
+        wm_text_default = "" if _root_txt == "" else (_root_txt or settings.default_wm_text)
+
+        # 프리뷰 오버레이(유령) 설정
+        wm_cfg_overlay = None
+        if wm_text_default:
+            wm_cfg_overlay = {
+                "text": wm_text_default,
+                "opacity": settings.wm_opacity,
+                "scale_pct": settings.wm_scale_pct,
+                "fill": settings.wm_fill_color,
+                "stroke": settings.wm_stroke_color,
+                "stroke_w": settings.wm_stroke_width,
+                "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
+            }
+
+        # 개별 이미지 오버라이드(있으면 프리뷰/유령 모두 해당 설정 우선)
+        active_src = self._active_src
+        overrides = meta.get("img_overrides") or {}
+        ov = overrides.get(active_src) if active_src else None
+        if ov:
+            wm_cfg_overlay = {
+                "text": ov.get("text", ""),
+                "opacity": int(ov.get("opacity", settings.wm_opacity)),
+                "scale_pct": int(ov.get("scale_pct", settings.wm_scale_pct)),
+                "fill": tuple(ov.get("fill", settings.wm_fill_color)),
+                "stroke": tuple(ov.get("stroke", settings.wm_stroke_color)),
+                "stroke_w": int(ov.get("stroke_w", settings.wm_stroke_width)),
+                "font_path": ov.get("font_path", str(settings.wm_font_path) if settings.wm_font_path else ""),
+            }
+
+        self.preview.set_wm_preview_config(wm_cfg_overlay)
+
+        # 앵커(개별 → 게시물 → 앱 기본)
+        img_anchor_map = meta.get("img_anchors") or {}
+        if active_src and active_src in img_anchor_map:
+            anchor = tuple(img_anchor_map[active_src])
+        elif meta.get("anchor"):
+            anchor = tuple(meta["anchor"])
         else:
-            messagebox.showinfo("개별 지정 해제", "이 이미지에는 개별 지정이 없습니다.")
+            anchor = tuple(self.app_settings.wm_anchor)
+        self._wm_anchor = anchor
+
+        # --- 프리뷰 이미지 생성 ---
+        try:
+            if ov and active_src:
+                # 오버라이드가 있으면 수동 합성
+                before = load_image(active_src)
+                tgt = settings.sizes[0]
+                canvas = before.copy() if tuple(tgt) == (0, 0) else resize_contain(before, tgt, settings.bg_color).copy()
+                txt = (ov.get("text") or "").strip()
+                if txt == "":
+                    after = canvas
+                else:
+                    after = add_text_watermark(
+                        canvas,
+                        text=txt,
+                        opacity_pct=int(ov.get("opacity", settings.wm_opacity)),
+                        scale_pct=int(ov.get("scale_pct", settings.wm_scale_pct)),
+                        fill_rgb=tuple(ov.get("fill", settings.wm_fill_color)),
+                        stroke_rgb=tuple(ov.get("stroke", settings.wm_stroke_color)),
+                        stroke_width=int(ov.get("stroke_w", settings.wm_stroke_width)),
+                        anchor_norm=anchor,
+                        font_path=Path(ov.get("font_path")) if ov.get("font_path") else settings.wm_font_path,
+                    )
+                before_img = load_image(active_src)  # 원본
+                after_img = after
+            else:
+                # 기존 기본 프리뷰 경로
+                before_img, after_img = self.controller.preview_by_key(
+                    key, self.posts, settings, selected_src=active_src
+                )
+        except Exception as e:
+            messagebox.showerror("미리보기 오류", str(e))
+            return
+
+        self.preview.show(before_img, after_img)
+        self.preview.set_anchor(anchor)
 
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, _roots,
          wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
 
-        # ✅ 출력 루트 폴백: 입력칸이 비어 있으면 저장돼 있던 경로 사용
+        # 출력 루트 폴백
         if not out_root_str and self.app_settings.output_root:
             out_root = self.app_settings.output_root
         else:
             out_root = Path(out_root_str) if out_root_str else Path("")
 
-        # ✅ 폰트 폴백(이미 적용한 것과 동일)
+        # 폰트 폴백
         if not wm_font_path_str and self.app_settings.wm_font_path:
             wm_font_path = self.app_settings.wm_font_path
         else:
@@ -324,86 +376,9 @@ class MainWindow(BaseTk):
             wm_font_path=wm_font_path,
         )
 
-    def on_scan(self):
-        self._rescan_posts()
-
-    def on_select_post(self, key: str | None):
-        self._active_src = None
-        if key and key in self.posts:
-            meta = self.posts[key]
-            files = meta.get("files", [])
-            default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
-            img_map = meta.get("img_anchors") or {}
-            self.gallery.set_files(files, default_anchor=default_anchor, img_anchor_map=img_map)
-            self.gallery.set_active(None)
-            self._wm_anchor = default_anchor
-            self.wm_editor.set_active_image_and_defaults(None, None)
-            self.on_preview()
-
-    def _on_activate_image(self, path: Path):
-        self._active_src = path
-        self.gallery.set_active(path)
-        key = self.post_list.get_selected_post()
-        meta = self.posts.get(key, {})
-        overrides = (meta or {}).get("img_overrides") or {}
-        cfg = overrides.get(path)  # dict or None
-        self.wm_editor.set_active_image_and_defaults(path, cfg)
-        self.on_preview()
-
-    def on_preview(self):
-        key = self.post_list.get_selected_post()
-        if not key:
-            messagebox.showinfo("미리보기", "게시물을 하나 선택하세요.")
-            return
-        if key not in self.posts or not self.posts[key]["files"]:
-            messagebox.showinfo("미리보기", "이 게시물에는 이미지가 없습니다.")
-            return
-
-        settings = self._collect_settings()
-        meta = self.posts[key]
-
-        _raw = meta["root"].wm_text
-        _root_txt = ("" if _raw is None else _raw.strip())
-        wm_text = "" if _root_txt == "" else (_root_txt or settings.default_wm_text)
-
-        wm_cfg = None
-        if wm_text:
-            wm_cfg = {
-                "text": wm_text,
-                "opacity": settings.wm_opacity,
-                "scale_pct": settings.wm_scale_pct,
-                "fill": settings.wm_fill_color,
-                "stroke": settings.wm_stroke_color,
-                "stroke_w": settings.wm_stroke_width,
-                "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
-            }
-        self.preview.set_wm_preview_config(wm_cfg)
-
-        img_anchor_map = meta.get("img_anchors") or {}
-        if self._active_src and self._active_src in img_anchor_map:
-            anchor = tuple(img_anchor_map[self._active_src])
-        elif meta.get("anchor"):
-            anchor = tuple(meta["anchor"])
-        else:
-            anchor = tuple(self.app_settings.wm_anchor)
-
-        self._wm_anchor = anchor
-
-        try:
-            before_img, after_img = self.controller.preview_by_key(
-                key, self.posts, self._collect_settings(), selected_src=self._active_src
-            )
-        except Exception as e:
-            messagebox.showerror("미리보기 오류", str(e))
-            return
-
-        self.preview.show(before_img, after_img)
-        self.preview.set_anchor(self._wm_anchor)
-
-        active_path = self._active_src if self._active_src else (meta["files"][0] if meta["files"] else None)
-        wm_cfg = self.controller.resolve_wm_config(meta, self._collect_settings(), active_path) if active_path else None
-        self.preview.set_active_image_and_defaults(active_path, wm_cfg)
-
+    # ──────────────────────────────────────────────────────────────────────
+    # 앵커 변경/적용/해제
+    # ──────────────────────────────────────────────────────────────────────
     def _on_anchor_change(self, norm_xy):
         key = self.post_list.get_selected_post()
         if not key or key not in self.posts:
@@ -421,20 +396,79 @@ class MainWindow(BaseTk):
         self._refresh_gallery_overlay(key)
         self.on_preview()
 
+    def _on_apply_all(self, anchor):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts:
+            return
+
+        meta = self.posts[key]
+        files = meta.get("files") or []
+        img_map = meta.get("img_overrides") or {}  # 개별 오버라이드와 충돌 없음
+
+        meta["anchor"] = (float(anchor[0]), float(anchor[1]))
+        # 개별 지정 앵커는 손대지 않음
+        self._refresh_gallery_overlay(key)
+        self._wm_anchor = meta["anchor"]
+        self.on_preview()
+
+        messagebox.showinfo("모든 이미지에 적용", "기본 위치를 업데이트했습니다.")
+
+    def _on_clear_individual(self):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts or not self._active_src:
+            messagebox.showinfo("개별 지정 해제", "해제할 이미지를 먼저 선택하세요.")
+            return
+        meta = self.posts[key]
+        img_map = meta.get("img_anchors") or {}
+        if self._active_src in img_map:
+            del img_map[self._active_src]
+            if not img_map:
+                meta["img_anchors"] = {}
+            self._refresh_gallery_overlay(key)
+            self.on_preview()
+            messagebox.showinfo("개별 지정 해제", "현재 이미지가 게시물 기본 위치를 따르도록 복구되었습니다.")
+        else:
+            messagebox.showinfo("개별 지정 해제", "이 이미지에는 개별 지정이 없습니다.")
+
     def _refresh_gallery_overlay(self, key: str):
         meta = self.posts.get(key) or {}
         default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
         img_map = meta.get("img_anchors") or {}
-        style_over_set = set((meta.get("img_overrides") or {}).keys())
-        self.gallery.update_anchor_overlay(default_anchor, img_map, style_over_set)
+        self.gallery.update_anchor_overlay(default_anchor, img_map)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # 에디터 콜백(저장/해제)
+    # ──────────────────────────────────────────────────────────────────────
+    def _on_image_wm_override(self, path: Path, ov: dict):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts:
+            return
+        meta = self.posts[key]
+        overrides = meta.setdefault("img_overrides", {})
+        overrides[path] = ov
+        self.on_preview()
+
+    def _on_image_wm_clear(self, path: Path):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts:
+            return
+        meta = self.posts[key]
+        overrides = meta.get("img_overrides") or {}
+        try:
+            del overrides[path]
+        except Exception:
+            pass
+        self.on_preview()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 배치 시작
+    # ──────────────────────────────────────────────────────────────────────
     def on_start_batch(self):
         if not self.posts:
-            messagebox.showinfo("시작", "스캔된 게시물이 없습니다.")
+            messagebox.showinfo("시작", "등록된 게시물이 없습니다.")
             return
 
         out_root_str = (self.opt.get_output_root_str() or "").strip()
-        # ✅ 폴백: 입력칸이 비어 있어도 저장값이 있으면 사용
         if not out_root_str and self.app_settings.output_root:
             out_root_str = str(self.app_settings.output_root)
         if not out_root_str:
@@ -455,26 +489,14 @@ class MainWindow(BaseTk):
         total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
         self.status.reset(total)
 
-        def on_prog(n):
-            # UI 스레드로 마샬링
-            self.after(0, lambda: self.status.update_progress(n))
-
+        def on_prog(n): self.status.update_progress(n)
         def on_done(n, _out=out_root):
-            def _ui():
-                self.status.finish(n)
-                self.status.log_info(f"저장 위치: {_out}")
-                self.status.enable_open_button(True)
+            self.status.finish(n)
+            self.status.log_info(f"저장 위치: {_out}")
+            self.status.enable_open_button(True)
+        def on_err(msg): self.status.log_error(msg)
 
-            self.after(0, _ui)
-
-        def on_err(msg):
-            self.after(0, lambda: self.status.log_error(msg))
-
-        threading.Thread(
-            target=self.controller.start_batch,
-            args=(settings, self.posts, on_prog, on_done, on_err),
-            daemon=True
-        ).start()
+        self.controller.start_batch(settings, self.posts, on_prog, on_done, on_err)
 
     def _on_close(self):
         try:
@@ -482,32 +504,3 @@ class MainWindow(BaseTk):
         except Exception:
             pass
         self.destroy()
-
-    def _on_image_wm_override(self, path: Path, override: dict):
-        key = self.post_list.get_selected_post()
-        if not key or key not in self.posts or not path:
-            return
-        meta = self.posts[key]
-        img_ov = meta.get("img_overrides")
-        if img_ov is None:
-            img_ov = meta["img_overrides"] = {}
-        # Path 키 사용
-        img_ov[path] = {
-            k: v for k, v in override.items()
-            if k in ("text", "opacity", "scale_pct", "fill", "stroke", "stroke_w", "font_path")
-        }
-        self._refresh_gallery_overlay(key)
-        self.on_preview()
-
-    def _on_image_wm_clear(self, path: Path):
-        key = self.post_list.get_selected_post()
-        if not key or key not in self.posts or not path:
-            return
-        meta = self.posts[key]
-        img_ov = meta.get("img_overrides") or {}
-        if path in img_ov:
-            del img_ov[path]
-            if not img_ov:
-                meta["img_overrides"] = {}
-        self._refresh_gallery_overlay(key)
-        self.on_preview()
