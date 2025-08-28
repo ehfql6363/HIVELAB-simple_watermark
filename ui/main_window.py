@@ -5,6 +5,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox
 from typing import Dict, Optional
+import threading
 
 from controller import AppController
 from settings import AppSettings, DEFAULT_SIZES, DEFAULT_WM_TEXT, hex_to_rgb
@@ -25,6 +26,8 @@ except Exception:
 class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
         super().__init__()
+        self._roots_sig = None
+
         self.title("게시물 워터마크 & 리사이즈")
         self.geometry("1180x860")
 
@@ -55,14 +58,42 @@ class MainWindow(BaseTk):
         self._on_options_changed()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def _make_roots_signature(self) -> tuple:
+        """루트 경로/워터마크 텍스트 + 드롭 이미지 목록으로 변경 여부 판단"""
+        try:
+            roots = self.opt.get_roots()
+        except Exception:
+            roots = []
+        try:
+            dropped = self.opt.get_dropped_images()
+        except Exception:
+            dropped = []
+
+        roots_sig = tuple(sorted((str(r.path), (r.wm_text or "")) for r in roots))
+        dropped_sig = tuple(sorted(str(p) for p in dropped))
+        return (roots_sig, dropped_sig)
+
+    def _rescan_posts(self):
+        """루트/드롭 이미지 기반으로 게시물 재구성 → 리스트/갤러리/미리보기 갱신"""
+        roots = self.opt.get_roots()
+        dropped = self.opt.get_dropped_images()
+
+        self.posts = self.controller.scan_posts_multi(roots, dropped_images=dropped)
+        self.post_list.set_posts(self.posts)
+
+        # 초기화
+        self._active_src = None
+        self.gallery.clear()
+        self.gallery.update_anchor_overlay((0.5, 0.5), {})
+
+        # 첫 게시물 자동 선택 → 미리보기 자동 표시
+        if self.posts:
+            first_key = sorted(self.posts.keys())[0]
+            self.post_list.select_key(first_key)  # on_select_post 트리거 → on_preview까지 연결
+
     def _build_header(self, parent):
         self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
         self.opt.pack(fill="x", pady=(0, 6))
-
-        tbar = ttk.Frame(parent)
-        tbar.pack(fill="x", pady=(0, 6))
-        ttk.Button(tbar, text="게시물 스캔", command=self.on_scan).pack(side="left")
-        ttk.Button(tbar, text="미리보기", command=self.on_preview).pack(side="left", padx=6)
 
     def _on_apply_all(self, anchor):
         key = self.post_list.get_selected_post()
@@ -179,6 +210,12 @@ class MainWindow(BaseTk):
         except Exception:
             pass
 
+        sig = self._make_roots_signature()
+        prev = getattr(self, "_roots_sig", None)
+        if sig != prev:
+            self._roots_sig = sig
+            self._rescan_posts()
+
     def _on_clear_individual(self):
         key = self.post_list.get_selected_post()
         if not key or key not in self.posts or not self._active_src:
@@ -227,21 +264,7 @@ class MainWindow(BaseTk):
         )
 
     def on_scan(self):
-        roots = self.opt.get_roots()
-        if not roots:
-            messagebox.showinfo("루트 폴더", "먼저 루트 폴더를 추가하세요.")
-            return
-
-        dropped = self.opt.get_dropped_images()
-        self.posts = self.controller.scan_posts_multi(
-            roots,
-            dropped_images=dropped
-        )
-        self.post_list.set_posts(self.posts)
-        # 초기화
-        self._active_src = None
-        self.gallery.clear()
-        self.gallery.update_anchor_overlay((0.5, 0.5), {})
+        self._rescan_posts()
 
     def on_select_post(self, key: str | None):
         self._active_src = None
@@ -360,14 +383,26 @@ class MainWindow(BaseTk):
         total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
         self.status.reset(total)
 
-        def on_prog(n): self.status.update_progress(n)
-        def on_done(n, _out=out_root):
-            self.status.finish(n)
-            self.status.log_info(f"저장 위치: {_out}")
-            self.status.enable_open_button(True)
-        def on_err(msg): self.status.log_error(msg)
+        def on_prog(n):
+            # UI 스레드로 마샬링
+            self.after(0, lambda: self.status.update_progress(n))
 
-        self.controller.start_batch(settings, self.posts, on_prog, on_done, on_err)
+        def on_done(n, _out=out_root):
+            def _ui():
+                self.status.finish(n)
+                self.status.log_info(f"저장 위치: {_out}")
+                self.status.enable_open_button(True)
+
+            self.after(0, _ui)
+
+        def on_err(msg):
+            self.after(0, lambda: self.status.log_error(msg))
+
+        threading.Thread(
+            target=self.controller.start_batch,
+            args=(settings, self.posts, on_prog, on_done, on_err),
+            daemon=True
+        ).start()
 
     def _on_close(self):
         try:
