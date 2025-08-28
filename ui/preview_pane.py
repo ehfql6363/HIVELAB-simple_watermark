@@ -5,6 +5,7 @@ from tkinter import ttk
 from collections import deque
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from typing import Callable, Tuple, Optional, Dict
+from pathlib import Path
 
 _DEFAULT_FONTS = [
     "arial.ttf", "tahoma.ttf", "segoeui.ttf",
@@ -313,13 +314,17 @@ class _CheckerCanvas(tk.Canvas):
 class PreviewPane(ttk.Frame):
     """Before/After + Swap + (그리드/드래그) 위치 지정 + 드래그 유령 워터마크."""
     def __init__(self, master,
-                 on_anchor_change: Callable[[Tuple[float,float]], None] | None = None,
-                 on_apply_all: Callable[[Tuple[float,float]], None] | None = None,
-                 on_clear_individual=None):
+                 on_anchor_change=None,
+                 on_apply_all=None,
+                 on_clear_individual=None,
+                 on_image_wm_override=None,
+                 on_image_wm_clear=None):
         super().__init__(master)
         self._on_anchor_change = on_anchor_change
         self._on_clear_individual = on_clear_individual
         self._on_apply_all = on_apply_all
+        self._on_image_wm_override = on_image_wm_override
+        self._on_image_wm_clear = on_image_wm_clear
         self._placement_mode = tk.StringVar(value="grid")
 
         top = ttk.Frame(self); top.pack(fill="x", pady=(2, 0))
@@ -356,6 +361,54 @@ class PreviewPane(ttk.Frame):
 
         container.columnconfigure(0, weight=1); container.columnconfigure(1, weight=1); container.rowconfigure(0, weight=1)
 
+        # ------- 개별 이미지 워터마크 에디터 -------
+        editor = ttk.LabelFrame(self, text="개별 이미지 워터마크")
+        editor.pack(fill="x", padx=0, pady=(4, 0))
+
+        self.var_wm_text = tk.StringVar(value="")
+        self.var_opacity = tk.IntVar(value=30)
+        self.var_scale = tk.IntVar(value=20)
+        self.var_fill = tk.StringVar(value="#000000")
+        self.var_stroke = tk.StringVar(value="#FFFFFF")
+        self.var_stroke_w = tk.IntVar(value=2)
+        self.var_font = tk.StringVar(value="")
+
+        # 1행: 텍스트
+        ttk.Label(editor, text="텍스트").grid(row=0, column=0, sticky="e", padx=(6, 4), pady=4)
+        ttk.Entry(editor, textvariable=self.var_wm_text, width=52).grid(row=0, column=1, columnspan=5, sticky="we",
+                                                                        pady=4)
+
+        # 2행: 불투명/스케일/외곽선두께
+        ttk.Label(editor, text="불투명").grid(row=1, column=0, sticky="e")
+        ttk.Spinbox(editor, from_=0, to=100, textvariable=self.var_opacity, width=5).grid(row=1, column=1, sticky="w")
+        ttk.Label(editor, text="스케일%").grid(row=1, column=2, sticky="e")
+        ttk.Spinbox(editor, from_=1, to=50, textvariable=self.var_scale, width=5).grid(row=1, column=3, sticky="w")
+        ttk.Label(editor, text="외곽선").grid(row=1, column=4, sticky="e")
+        ttk.Spinbox(editor, from_=0, to=20, textvariable=self.var_stroke_w, width=5).grid(row=1, column=5, sticky="w")
+
+        # 3행: 색상/폰트
+        ttk.Label(editor, text="전경색").grid(row=2, column=0, sticky="e")
+        e_fill = ttk.Entry(editor, textvariable=self.var_fill, width=10);
+        e_fill.grid(row=2, column=1, sticky="w")
+        ttk.Button(editor, text="선택", command=lambda: self._pick_color(self.var_fill)).grid(row=2, column=2, sticky="w",
+                                                                                            padx=(2, 6))
+        ttk.Label(editor, text="외곽선색").grid(row=2, column=3, sticky="e")
+        e_st = ttk.Entry(editor, textvariable=self.var_stroke, width=10);
+        e_st.grid(row=2, column=4, sticky="w")
+        ttk.Button(editor, text="선택", command=lambda: self._pick_color(self.var_stroke)).grid(row=2, column=5,
+                                                                                              sticky="w", padx=(2, 6))
+
+        ttk.Label(editor, text="폰트").grid(row=3, column=0, sticky="e")
+        ttk.Entry(editor, textvariable=self.var_font, width=46).grid(row=3, column=1, columnspan=4, sticky="we")
+        ttk.Button(editor, text="적용", command=self._apply_override).grid(row=3, column=5, sticky="w", padx=(4, 0))
+        ttk.Button(editor, text="해제", command=self._clear_override).grid(row=3, column=6, sticky="w")
+
+        for c in range(6):
+            editor.columnconfigure(c, weight=1)
+
+        # 내부 상태: 현재 활성 이미지 경로 (MainWindow가 관리하므로 여긴 참조만)
+        self._active_path: Optional[Path] = None
+
         self._pil_before: Image.Image | None = None
         self._pil_after: Image.Image | None = None
         self._swapped = False
@@ -370,6 +423,66 @@ class PreviewPane(ttk.Frame):
         self._apply_grid_and_visuals()
 
     # ------- 외부 API -------
+    def _pick_color(self, var: tk.StringVar):
+        from tkinter import colorchooser
+        initial = var.get() or "#000000"
+        _, hx = colorchooser.askcolor(color=initial, title="색상 선택")
+        if hx:
+            var.set(hx)
+
+    def _apply_override(self):
+        if not self._on_image_wm_override or not self._active_path:
+            return
+
+        def _rgb(hx):
+            hx = (hx or "").strip()
+            if not hx.startswith("#") or len(hx) not in (4, 7): return None
+            if len(hx) == 4:
+                r = g = b = int(hx[1] * 2, 16);
+                g = int(hx[2] * 2, 16);
+                b = int(hx[3] * 2, 16)
+                return (r, g, b)
+            return (int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16))
+
+        ov = {
+            "text": self.var_wm_text.get(),  # 빈문자 → 워터마크 없음
+            "opacity": int(self.var_opacity.get()),
+            "scale_pct": int(self.var_scale.get()),
+            "fill": _rgb(self.var_fill.get()) or (0, 0, 0),
+            "stroke": _rgb(self.var_stroke.get()) or (255, 255, 255),
+            "stroke_w": int(self.var_stroke_w.get()),
+            "font_path": self.var_font.get().strip(),
+        }
+        self._on_image_wm_override(self._active_path, ov)
+
+    def _clear_override(self):
+        if self._on_image_wm_clear and self._active_path:
+            self._on_image_wm_clear(self._active_path)
+
+    def set_active_image_and_defaults(self, path: Optional[Path], wm_cfg: Optional[dict]):
+        self._active_path = path
+        if not wm_cfg:
+            # 비우되, 기존 값은 유지해도 무방하지만 UX상 초기화
+            self.var_wm_text.set("")
+            self.var_opacity.set(30);
+            self.var_scale.set(20)
+            self.var_fill.set("#000000");
+            self.var_stroke.set("#FFFFFF");
+            self.var_stroke_w.set(2)
+            self.var_font.set("")
+            return
+        self.var_wm_text.set(wm_cfg.get("text", ""))
+        self.var_opacity.set(int(wm_cfg.get("opacity", 30)))
+        self.var_scale.set(int(wm_cfg.get("scale_pct", 20)))
+
+        def _fmt_rgb(rgb): return "#%02X%02X%02X" % tuple(rgb) if isinstance(rgb, (list, tuple)) and len(
+            rgb) == 3 else "#000000"
+
+        self.var_fill.set(_fmt_rgb(wm_cfg.get("fill", (0, 0, 0))))
+        self.var_stroke.set(_fmt_rgb(wm_cfg.get("stroke", (255, 255, 255))))
+        self.var_stroke_w.set(int(wm_cfg.get("stroke_w", 2)))
+        self.var_font.set(wm_cfg.get("font_path", ""))
+
     def set_wm_preview_config(self, cfg: Optional[Dict]):
         # 빈 텍스트면 유령도 안 뜨도록 _CheckerCanvas에서 처리
         self.canvas_before.set_wm_config(cfg)
