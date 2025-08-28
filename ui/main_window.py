@@ -150,8 +150,8 @@ class MainWindow(BaseTk):
         self.post_list = PostList(
             mid,
             on_select=self.on_select_post,
-            resolve_wm=lambda meta: self.controller.resolve_wm_for_meta(meta, self.app_settings),  # ★ 표시용
-            on_wmtext_change=self._on_post_wmtext_change,  # ★ 편집 반영
+            resolve_wm=lambda meta: self.controller.resolve_wm_for_meta(meta, self.app_settings),
+            on_wmtext_change=self._on_post_wmtext_change,
         )
         mid.add(self.post_list, weight=1)
 
@@ -163,7 +163,9 @@ class MainWindow(BaseTk):
             pre_frame,
             on_anchor_change=self._on_anchor_change,
             on_apply_all=self._on_apply_all,
-            on_clear_individual = self._on_clear_individual
+            on_clear_individual=self._on_clear_individual,
+            on_image_wm_override=self._on_image_wm_override,
+            on_image_wm_clear=self._on_image_wm_clear,
         )
         self.preview.pack(fill="both", expand=True)
         right.add(pre_frame, weight=5)
@@ -292,6 +294,7 @@ class MainWindow(BaseTk):
             default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
             img_map = meta.get("img_anchors") or {}
             self.gallery.set_files(files, default_anchor=default_anchor, img_anchor_map=img_map)
+            self._refresh_gallery_overlay(key)
             self.gallery.set_active(None)
             self._wm_anchor = default_anchor
             self.on_preview()
@@ -342,14 +345,18 @@ class MainWindow(BaseTk):
 
         try:
             before_img, after_img = self.controller.preview_by_key(
-                key, self.posts, settings, selected_src=self._active_src
+                key, self.posts, self._collect_settings(), selected_src=self._active_src
             )
         except Exception as e:
             messagebox.showerror("미리보기 오류", str(e))
             return
 
         self.preview.show(before_img, after_img)
-        self.preview.set_anchor(anchor)
+        self.preview.set_anchor(self._wm_anchor)
+
+        active_path = self._active_src if self._active_src else (meta["files"][0] if meta["files"] else None)
+        wm_cfg = self.controller.resolve_wm_config(meta, self._collect_settings(), active_path) if active_path else None
+        self.preview.set_active_image_and_defaults(active_path, wm_cfg)
 
     def _on_anchor_change(self, norm_xy):
         key = self.post_list.get_selected_post()
@@ -372,7 +379,8 @@ class MainWindow(BaseTk):
         meta = self.posts.get(key) or {}
         default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
         img_map = meta.get("img_anchors") or {}
-        self.gallery.update_anchor_overlay(default_anchor, img_map)
+        style_over_set = set((meta.get("img_overrides") or {}).keys())
+        self.gallery.update_anchor_overlay(default_anchor, img_map, style_over_set)
 
     def on_start_batch(self):
         if not self.posts:
@@ -428,3 +436,32 @@ class MainWindow(BaseTk):
         except Exception:
             pass
         self.destroy()
+
+    def _on_image_wm_override(self, path: Path, override: dict):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts or not path:
+            return
+        meta = self.posts[key]
+        img_ov = meta.get("img_overrides")
+        if img_ov is None:
+            img_ov = meta["img_overrides"] = {}
+        # Path 키 사용
+        img_ov[path] = {
+            k: v for k, v in override.items()
+            if k in ("text", "opacity", "scale_pct", "fill", "stroke", "stroke_w", "font_path")
+        }
+        self._refresh_gallery_overlay(key)
+        self.on_preview()
+
+    def _on_image_wm_clear(self, path: Path):
+        key = self.post_list.get_selected_post()
+        if not key or key not in self.posts or not path:
+            return
+        meta = self.posts[key]
+        img_ov = meta.get("img_overrides") or {}
+        if path in img_ov:
+            del img_ov[path]
+            if not img_ov:
+                meta["img_overrides"] = {}
+        self._refresh_gallery_overlay(key)
+        self.on_preview()
