@@ -26,6 +26,17 @@ class AppController:
         self._canvas_cache_limit = 64
         self._cache_lock = threading.Lock()
 
+    def resolve_wm_for_meta(self, meta: dict, settings: AppSettings) -> str:
+        """
+        게시물 메타에 'wm_text_edit'가 있으면 최우선 적용.
+        None/빈문자열("")은 '워터마크 없음' 의미. (UI에서 빈값도 허용)
+        없으면 루트설정/기본설정 순으로 해석.
+        """
+        if "wm_text_edit" in meta:
+            return (meta.get("wm_text_edit") or "").strip()
+        rc: RootConfig = meta["root"]
+        return self._resolve_wm_text(rc, settings)
+
     def _flat_output_dir(self, out_root: Path) -> Path:
         """
         항상 출력 루트에만 저장(폴더 감싸지 않음).
@@ -149,13 +160,7 @@ class AppController:
         return canvas
 
     # ---------- 미리보기 ----------
-    def preview_by_key(
-        self,
-        key: str,
-        posts: Dict[str, dict],
-        settings: AppSettings,
-        selected_src: Optional[Path] = None
-    ) -> tuple[Image.Image, Image.Image]:
+    def preview_by_key(self, key: str, posts: Dict[str, dict], settings: AppSettings, selected_src: Optional[Path] = None) -> tuple[Image.Image, Image.Image]:
         meta = posts.get(key)
         if not meta or not meta["files"]:
             raise ValueError("No images in this post.")
@@ -165,7 +170,7 @@ class AppController:
         tgt = settings.sizes[0]
         canvas = before.copy() if tuple(tgt) == (0, 0) else self._get_resized_canvas(src, tgt, settings.bg_color).copy()
 
-        wm_text = self._resolve_wm_text(meta["root"], settings)
+        wm_text = self.resolve_wm_for_meta(meta, settings)
         if not wm_text:
             return before, canvas
 
@@ -219,22 +224,19 @@ class AppController:
             return
 
         def _do(rc: RootConfig, meta: dict, src: Path, w: int, h: int) -> None:
-            wm_text = self._resolve_wm_text(rc, settings)
+            wm_text = self.resolve_wm_for_meta(meta, settings)  # ★ 변경
             anchor = self._choose_anchor(meta, settings, src)
             canvas = self._get_resized_canvas(src, (w, h), settings.bg_color)
-            out_img = (
-                canvas if not wm_text else
-                add_text_watermark(
-                    canvas.copy(),
-                    text=wm_text,
-                    opacity_pct=settings.wm_opacity,
-                    scale_pct=settings.wm_scale_pct,
-                    fill_rgb=settings.wm_fill_color,
-                    stroke_rgb=settings.wm_stroke_color,
-                    stroke_width=settings.wm_stroke_width,
-                    anchor_norm=anchor,
-                    font_path=settings.wm_font_path,
-                )
+            out_img = canvas if not wm_text else add_text_watermark(
+                canvas.copy(),
+                text=wm_text,
+                opacity_pct=settings.wm_opacity,
+                scale_pct=settings.wm_scale_pct,
+                fill_rgb=settings.wm_fill_color,
+                stroke_rgb=settings.wm_stroke_color,
+                stroke_width=settings.wm_stroke_width,
+                anchor_norm=anchor,
+                font_path=settings.wm_font_path,
             )
 
             # 저장 경로 결정
