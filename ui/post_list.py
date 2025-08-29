@@ -14,7 +14,7 @@ class PostList(ttk.Frame):
         master,
         on_select: Optional[Callable[[str | None], None]] = None,
         on_activate: Optional[Callable[[str | None], None]] = None,
-        resolve_wm: Optional[Callable[[dict], str]] = None,                 # 게시물용 표시 텍스트
+        resolve_wm: Optional[Callable[[dict, Optional[Path]], str]] = None,                 # 게시물용 표시 텍스트
         resolve_img_wm: Optional[Callable[[dict, Path], str]] = None,       # 이미지용 표시 텍스트
         on_wmtext_change: Optional[Callable[[str, str], None]] = None,      # 게시물 편집 반영
         on_image_wmtext_change: Optional[Callable[[str, Path, str], None]] = None,  # 이미지 편집 반영
@@ -132,6 +132,31 @@ class PostList(ttk.Frame):
                         self._iid_to_item[iid] = ("image", (post_key, path))
 
     # ---------- 유틸 ----------
+
+    def refresh_wm_for_post(self, post_key: str):
+        """post_key에 해당하는 트리의 표시 텍스트를 즉시 다시 채운다.
+        - 게시물(폴더) 행 1개
+        - 그 하위의 모든 이미지 행
+        """
+        meta = self._posts_ref.get(post_key)
+        if not meta:
+            return
+
+        for iid, (typ, item) in self._iid_to_item.items():
+            if typ == "post" and item == post_key:
+                # 게시물(폴더) 행
+                try:
+                    self.tree.set(iid, "wm_text", self.resolve_wm(meta))
+                except Exception:
+                    pass
+            elif typ == "image":
+                pk, path = item
+                if pk == post_key:
+                    # 하위 이미지 행
+                    try:
+                        self.tree.set(iid, "wm_text", self.resolve_img_wm(meta, path))
+                    except Exception:
+                        pass
 
     def _get_item(self, iid: str) -> Tuple[str, ItemKey] | None:
         return self._iid_to_item.get(iid)

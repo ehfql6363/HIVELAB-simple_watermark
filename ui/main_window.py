@@ -7,18 +7,13 @@ from tkinter import ttk, messagebox
 from typing import Dict, Optional, Tuple
 
 from controller import AppController
-from settings import AppSettings, DEFAULT_WM_TEXT, hex_to_rgb, RootConfig, IMAGES_VROOT
+from settings import AppSettings, DEFAULT_WM_TEXT, hex_to_rgb, RootConfig
+from ui.image_wm_editor import ImageWMEditor  # ★ 분리된 에디터
 from ui.options_panel import OptionsPanel
 from ui.post_list import PostList
 from ui.preview_pane import PreviewPane
-from ui.thumb_gallery import ThumbGallery
 from ui.status_bar import StatusBar
-from ui.image_wm_editor import ImageWMEditor  # ★ 분리된 에디터
-
-# 이미지 처리 유틸 (개별 오버라이드 미리보기 계산용)
-from services.image_ops import load_image
-from services.resize import resize_contain
-from services.watermark import add_text_watermark
+from ui.thumb_gallery import ThumbGallery
 
 # DnD 지원 루트
 try:
@@ -71,6 +66,33 @@ class MainWindow(BaseTk):
         self._on_options_changed()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_post_wmtext_change(self, post_key: str, value: str):
+        """
+        게시물 인라인 편집 반영:
+        - 트리뷰(부모/하위 이미지) 즉시 갱신
+        - 현재 보던 항목이면 프리뷰/에디터도 재계산
+        """
+        # 모델에도 반영(안전차원)
+        if post_key in self.posts:
+            self.posts[post_key]["wm_text_edit"] = value
+
+        # 트리뷰 표시 즉시 갱신 (부모/하위 이미지 모두)
+        try:
+            self.post_list.refresh_wm_for_post(post_key)
+        except Exception:
+            pass
+
+        # 프리뷰/에디터 갱신
+        try:
+            if self._active_src:
+                meta = self.posts.get(post_key) or {}
+                cfg = self._effective_wm_cfg_for(meta, self._active_src)
+                if hasattr(self, "wm_editor") and self.wm_editor:
+                    self.wm_editor.set_active_image_and_defaults(self._active_src, cfg)
+            self.on_preview()
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────────────────────────────────
     # 빌드
@@ -475,27 +497,6 @@ class MainWindow(BaseTk):
             # 빈 문자열 → “워터마크 없음”
             return ""
         return raw
-
-    def _on_post_wmtext_change(self, post_key: str, value: str):
-        """
-        게시물 인라인 편집 반영:
-        - 현재 그 게시물을 보고 있으면, 프리뷰/에디터/썸네일 즉시 갱신
-        """
-        if not self.posts:
-            return
-        meta = self.posts.get(post_key)
-        if not meta:
-            return
-        # 프리뷰 갱신
-        try:
-            # 에디터는 '이미지 선택 중일 때'만 의미가 있으므로, 선택 없으면 건너뜀
-            if self._active_src:
-                cfg = self._effective_wm_cfg_for(meta, self._active_src)
-                if hasattr(self, "wm_editor"):
-                    self.wm_editor.set_active_image_and_defaults(self._active_src, cfg)
-            self.on_preview()
-        except Exception:
-            pass
 
     # ──────────────────────────────────────────────────────────────────────
     # 앵커 변경/적용/해제
