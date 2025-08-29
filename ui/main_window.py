@@ -213,11 +213,10 @@ class MainWindow(BaseTk):
     def _effective_wm_cfg_for(self, meta: dict, path: Path | None) -> dict | None:
         """프리뷰/에디터에 내려줄 풀 옵션 딕셔너리(없음이면 None)."""
         txt = self._effective_wm_text_for(meta, path)
-        if txt == "":
-            return None  # 워터마크 없음
-        s = self._collect_settings()  # 이미 있는 함수: 현재 UI값을 읽어 AppSettings 만들던 것
-        return {
-            "text": txt,
+        s = self._collect_settings()  # 현재 UI 값
+
+        base = {
+            "text": (txt or "").strip(),
             "opacity": int(s.wm_opacity),
             "scale_pct": int(s.wm_scale_pct),
             "fill": tuple(s.wm_fill_color),
@@ -226,15 +225,36 @@ class MainWindow(BaseTk):
             "font_path": str(s.wm_font_path) if s.wm_font_path else "",
         }
 
+        # ★ 이미지 개별 오버라이드 반영
+        if path is not None:
+            img_ov = (meta.get("img_overrides") or {}).get(path) or {}
+            if img_ov:
+                base.update(img_ov)
+
+        # 최종 텍스트가 ""이면 '워터마크 없음'
+        if (base.get("text") or "").strip() == "":
+            return None
+        return base
+
     def _resolve_img_wm_text_for_list(self, meta: dict, path: Path) -> str:
         """
         이미지 레벨 표시 텍스트:
-        - meta["img_wm_text_edits"][path]가 있으면 우선
-        - 없으면 게시물 레벨에서 산출한 텍스트
+        - 개별 오버라이드(text)가 있으면 최우선
+        - 그다음 인라인 편집(meta["img_wm_text_edits"][path])
+        - 없으면 게시물/루트/앱 기본
         """
+        # 1순위: 오버라이드의 text
+        ov_map = meta.get("img_overrides") or {}
+        ov = ov_map.get(path) or {}
+        if "text" in ov:
+            return (ov.get("text") or "").strip()
+
+        # 2순위: 이미지 인라인 편집 텍스트
         img_edits = meta.get("img_wm_text_edits") or {}
         if path in img_edits:
             return (img_edits[path] or "").strip()
+
+        # 기본
         return self._resolve_wm_text_for_list(meta)
 
     def _on_image_wmtext_change(self, post_key: str, path: Path, value: str):
@@ -556,7 +576,8 @@ class MainWindow(BaseTk):
         meta = self.posts.get(key) or {}
         default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
         img_map = meta.get("img_anchors") or {}
-        self.gallery.update_anchor_overlay(default_anchor, img_map)
+        style_override_set = set((meta.get("img_overrides") or {}).keys())
+        self.gallery.update_anchor_overlay(default_anchor, img_map, style_override_set=style_override_set)
 
     # ──────────────────────────────────────────────────────────────────────
     # 에디터 콜백(저장/해제)
@@ -568,6 +589,18 @@ class MainWindow(BaseTk):
         meta = self.posts[key]
         overrides = meta.setdefault("img_overrides", {})
         overrides[path] = ov
+
+        # 썸네일 배지/앵커 오버레이 즉시 갱신
+        self._refresh_gallery_overlay(key)
+
+        # 리스트의 표시 텍스트 갱신(함수가 있다면 호출)
+        if hasattr(self.post_list, "refresh_wm_for_post"):
+            try:
+                self.post_list.refresh_wm_for_post(key)
+            except Exception:
+                pass
+
+        # 프리뷰 재생성
         self.on_preview()
 
     def _on_image_wm_clear(self, path: Path):
@@ -580,6 +613,15 @@ class MainWindow(BaseTk):
             del overrides[path]
         except Exception:
             pass
+
+        # 동기화 갱신
+        self._refresh_gallery_overlay(key)
+        if hasattr(self.post_list, "refresh_wm_for_post"):
+            try:
+                self.post_list.refresh_wm_for_post(key)
+            except Exception:
+                pass
+
         self.on_preview()
 
     # ──────────────────────────────────────────────────────────────────────
