@@ -177,9 +177,19 @@ class OptionsPanel(ttk.Frame):
 
         btns = ttk.Frame(self)
         btns.pack(fill="x", pady=(0, 6))
-        ttk.Button(btns, text="루트 추가…", command=self._add_root).pack(side="left")
-        ttk.Button(btns, text="삭제", command=self._remove_root).pack(side="left", padx=6)
-        ttk.Button(btns, text="모두 삭제", command=self._remove_all).pack(side="left")
+
+        # 왼쪽 스페이서로 버튼 묶음을 오른쪽으로 밀기
+        ttk.Frame(btns).pack(side="left", fill="x", expand=True)
+
+        # 오른쪽에서부터 역순으로 배치 → 화면상 순서: [루트 추가…][삭제][모두 삭제]
+        btn_all = ttk.Button(btns, text="모두 삭제", command=self._remove_all)
+        btn_all.pack(side="right")
+
+        btn_del = ttk.Button(btns, text="삭제", command=self._remove_root)
+        btn_del.pack(side="right", padx=(6, 0))
+
+        btn_add = ttk.Button(btns, text="루트 추가…", command=self._add_root)
+        btn_add.pack(side="right", padx=(6, 0))
 
         # 스와치 동기
         self.var_bg.trace_add("write", lambda *_: self._update_swatch(self.sw_bg, self.var_bg.get()))

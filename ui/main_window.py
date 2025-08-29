@@ -146,13 +146,13 @@ class MainWindow(BaseTk):
         self.bind_all("<F6>", lambda e: self._open_output_folder())
 
     def _build_middle(self, parent):
-        # 전체 가로 분할: 좌(게시물), 우(에디터+프리뷰+썸네일)
+        # 전체 가로 분할: 좌(게시물), 우(에디터 + [프리뷰/썸네일])
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True, padx=8, pady=(8, 8))
 
-        # ── 왼쪽: 게시물(트리)만 ───────────────────────────────────────────
+        # ── 왼쪽: 게시물(트리)만 ─────────────────────────
         left_frame = ttk.Frame(mid)
-        mid.add(left_frame, weight=3)  # 왼쪽 비중 높게(스크롤 여유)
+        mid.add(left_frame, weight=3)
 
         self.post_list = PostList(
             left_frame,
@@ -165,22 +165,26 @@ class MainWindow(BaseTk):
         )
         self.post_list.pack(fill="both", expand=True)
 
-        # ── 오른쪽: 세로 분할(에디터 → 프리뷰 → 썸네일) ─────────────────────
-        right = ttk.PanedWindow(mid, orient=tk.VERTICAL)
-        mid.add(right, weight=5)
+        # ── 오른쪽: 일반 프레임 + (프리뷰/썸네일) 전용 PanedWindow ──────────
+        right_col = ttk.Frame(mid)
+        mid.add(right_col, weight=5)
 
-        # (1) 개별 이미지 워터마크 에디터 - 맨 위로 이동
-        editor_frame = ttk.Frame(right)
+        # (1) 개별 이미지 워터마크 에디터: 맨 위, 여백 최소
+        editor_frame = ttk.Frame(right_col)
         self.wm_editor = ImageWMEditor(
             editor_frame,
             on_apply=self._on_image_wm_override,
             on_clear=self._on_image_wm_clear
         )
-        self.wm_editor.pack(fill="x", expand=False, pady=(0, 4))
-        right.add(editor_frame, weight=0)  # 고정 높이에 가깝게
+        self.wm_editor.pack(fill="x", expand=False)
+        editor_frame.pack(fill="x", side="top", padx=0, pady=(0, 6))  # ← 딱 붙게, 아래만 약간
 
-        # (2) 미리보기(가운데, 가장 큰 비중)
-        pre_frame = ttk.Frame(right)
+        # (2) 프리뷰/썸네일만 세로 리사이즈: 여기만 PanedWindow 사용
+        stack = ttk.PanedWindow(right_col, orient=tk.VERTICAL)
+        stack.pack(fill="both", expand=True, side="top")
+
+        # 프리뷰
+        pre_frame = ttk.Frame(stack)
         self.preview = PreviewPane(
             pre_frame,
             on_anchor_change=self._on_anchor_change,
@@ -188,47 +192,47 @@ class MainWindow(BaseTk):
             on_clear_individual=self._on_clear_individual
         )
         self.preview.pack(fill="both", expand=True)
-        right.add(pre_frame, weight=6)  # 가장 크게
+        stack.add(pre_frame, weight=6)
 
-        # (3) 썸네일(하단, 낮은 비중)
-        gal_frame = ttk.Frame(right)
+        # 썸네일
+        gal_frame = ttk.Frame(stack)
         self.gallery = ThumbGallery(
             gal_frame,
             on_activate=self._on_activate_image,
             thumb_size=168, cols=6, height=200
         )
         self.gallery.pack(fill="x", expand=False)
-        right.add(gal_frame, weight=1)
+        stack.add(gal_frame, weight=1)
 
-        # 프리뷰/썸네일 최소 높이 강제(부드럽게)
+        # 프리뷰/썸네일 최소 높이 유지(옵션)
         MIN_PREVIEW, MIN_GALLERY = 360, 180
-        self._right_sash_job = None
+        self._stack_sash_job = None
 
-        def _apply_right_sash():
-            self._right_sash_job = None
+        def _apply_stack_sash():
+            self._stack_sash_job = None
             try:
-                total = right.winfo_height()
+                total = stack.winfo_height()
                 if total <= 0:
                     return
-                pos = right.sashpos(0)
+                pos = stack.sashpos(0)
                 lo = MIN_PREVIEW
                 hi = max(MIN_PREVIEW, total - MIN_GALLERY)
                 pos = min(max(pos, lo), hi)
-                if pos != right.sashpos(0):
-                    right.sashpos(0, pos)
+                if pos != stack.sashpos(0):
+                    stack.sashpos(0, pos)
             except Exception:
                 pass
 
         def _debounced_enforce(_=None):
-            if self._right_sash_job:
+            if self._stack_sash_job:
                 try:
-                    self.after_cancel(self._right_sash_job)
+                    self.after_cancel(self._stack_sash_job)
                 except Exception:
                     pass
-            self._right_sash_job = self.after(60, _apply_right_sash)
+            self._stack_sash_job = self.after(60, _apply_stack_sash)
 
-        right.bind("<Configure>", _debounced_enforce)
-        self.after(0, _apply_right_sash)
+        stack.bind("<Configure>", _debounced_enforce)
+        self.after(0, _apply_stack_sash)
 
     def _effective_wm_text_for(self, meta: dict, path: Path | None) -> str:
         """이미지/게시물/루트/앱설정 순으로 워터마크 텍스트 결정."""

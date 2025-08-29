@@ -315,7 +315,7 @@ class PreviewPane(ttk.Frame):
         self._placement_mode = tk.StringVar(value="drag")
 
         top = ttk.Frame(self)
-        top.pack(fill="x", pady=(2, 0))
+        top.pack(fill="x", pady=(0, 0))
         self.lbl_left_cap = ttk.Label(top, text="적용", font=("", 10, "bold"))
         self.lbl_right_cap = ttk.Label(top, text="원본", font=("", 10, "bold"))
         self.btn_swap = ttk.Button(top, text="← 좌우 교체 →", command=self._on_swap)
