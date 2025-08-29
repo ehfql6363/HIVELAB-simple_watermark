@@ -74,6 +74,10 @@ class PostList(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", self._on_double_click)
 
+        self._iid_to_type = {}  # "post" / "image"
+        self._iid_to_postkey = {}  # 게시물 iid -> post_key
+        self._iid_to_imginfo = {}  # 이미지 iid -> (post_key, Path)
+
     # ---------- 데이터 채우기 ----------
 
     def set_posts(self, posts: Dict[str, dict]):
@@ -92,7 +96,7 @@ class PostList(ttk.Frame):
         # 루트 → (게시물 or 바로 이미지) → 이미지
         for root_key in sorted(groups.keys(), key=lambda s: Path(s).name.lower()):
             root_disp = "이미지" if root_key == IMAGES_VROOT else Path(root_key).name
-            rid = self.tree.insert("", "end", text="📂 " + root_disp, values=("",), open=True)
+            rid = self.tree.insert("", "end", text="📂 " + root_disp, values=("",), open=False)
             self._root_nodes[root_key] = rid
 
             posts_in_root = sorted(groups[root_key], key=lambda kv: kv[0].lower())
@@ -216,19 +220,69 @@ class PostList(ttk.Frame):
         if not sel:
             return
         iid = sel[0]
+
         item = self._get_item(iid)
-        if not item:
+
+        # 1) 루트가 클릭된 경우: 펼치고 첫 자식(게시물/이미지)으로 포커스 넘김
+        if item is None:
+            try:
+                # 루트 펼치기
+                self.tree.item(iid, open=True)
+                children = self.tree.get_children(iid)
+                if children:
+                    # 첫 자식 선택 → 여기서 <<TreeviewSelect>> 다시 발생
+                    self.tree.selection_set(children[0])
+                    self.tree.see(children[0])
+                    self.event_generate("<<TreeviewSelect>>")
+                return
+            except Exception:
+                pass
             return
 
         typ, key = item
-        # (1) 부모 쪽 콜백 유지: post 선택(또는 이미지 선택) → 해당 게시물 키 알림
+
+        # 2) 게시물 클릭: 자기 자신 펼치고, 부모 루트도 열기
+        if typ == "post":
+            try:
+                parent = self.tree.parent(iid)
+                if parent:
+                    self.tree.item(parent, open=True)
+                self.tree.item(iid, open=True)
+            except Exception:
+                pass
+
+        # (A) 부모 쪽 콜백 유지: post 선택(또는 이미지 선택) → 해당 게시물 key 알림
         if self.on_select:
             self.on_select(self.get_selected_post())
 
-        # (2) 이미지 행 선택이면 별도 콜백(선택사항)
+        # (B) 이미지 행이면 별도 콜백
         if typ == "image" and self.on_image_select:
             post_key, path = key
             self.on_image_select(post_key, path)
+
+    def select_first_post(self):
+        """트리 최상단에서 '게시물 노드가 있으면 그 게시물',
+        없고 이미지만 있으면 '첫 이미지'를 선택해 준다."""
+        roots = self.tree.get_children("")
+        if not roots:
+            return
+        rid = roots[0]
+        # 루트는 펼치기만 하고, 실제 선택은 첫 자식에게
+        try:
+            self.tree.item(rid, open=True)
+        except Exception:
+            pass
+
+        children = self.tree.get_children(rid)
+        if not children:
+            return
+
+        # 첫 자식을 선택 (게시물이든 이미지든)
+        first = children[0]
+        self.tree.selection_set(first)
+        self.tree.see(first)
+        # 선택 이벤트 트리거 → _on_select가 알아서 콜백 호출/미리보기 갱신
+        self.event_generate("<<TreeviewSelect>>")
 
     def _on_double_click(self, event):
         rowid = self.tree.identify_row(event.y)

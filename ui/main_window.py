@@ -313,15 +313,22 @@ class MainWindow(BaseTk):
         roots = self.opt.get_roots()
         dropped = self.opt.get_dropped_images()
         self.posts = self.controller.scan_posts_multi(roots, dropped_images=dropped)
+
         # 트리 갱신
-        if hasattr(self.post_list, "set_posts"):
-            self.post_list.set_posts(self.posts)
+        self.post_list.set_posts(self.posts)
+
         # 갤러리/프리뷰 초기화
         self._active_src = None
         self.gallery.clear()
         self.preview.clear()
         self.preview.set_anchor(tuple(self.app_settings.wm_anchor))
         self.wm_editor.set_active_image_and_defaults(None, None)
+
+        # ✅ 첫 항목 자동 선택 (이 안에서 <<TreeviewSelect>>를 발생시킴)
+        try:
+            self.post_list.select_first_post()
+        except Exception:
+            pass
 
     def _on_options_changed(self):
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
