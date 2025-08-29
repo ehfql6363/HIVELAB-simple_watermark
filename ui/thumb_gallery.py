@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from collections import OrderedDict
 from tkinter import ttk
 from pathlib import Path
 from typing import Callable, List, Optional, Dict, Tuple
@@ -49,6 +50,8 @@ class ThumbGallery(ttk.Frame):
         self.cols = int(cols)
         self.fixed_height = int(height)
 
+        self._thumb_base_cache: "OrderedDict[tuple, tuple[Image.Image, tuple[int,int,int,int]]]" = OrderedDict()
+        self._thumb_base_cache_limit = 128  # 필요시 256까지 올려도 됨 (메모리 여유 있으면)
         self._img_labels: Dict[Path, tk.Label] = {}
         self._sel_bars: Dict[Path, tk.Frame] = {}
         self._last_row_index: Optional[int] = None
@@ -76,6 +79,48 @@ class ThumbGallery(ttk.Frame):
         self._img_anchor_map: Dict[Path, Tuple[float, float]] = {}
 
     # ---------- public API ----------
+    def _thumb_key(self, path: Path, size: int) -> tuple:
+        try:
+            mt = path.stat().st_mtime_ns  # 파일 변경 시 자동 무효화
+        except Exception:
+            mt = 0
+        return (str(path), int(size), int(mt))
+
+    def _get_thumb_base_rgba(self, path: Path, size: int) -> tuple[Image.Image, tuple[int, int, int, int]]:
+        """
+        파일을 열어 (size x size) 캔버스에 가운데 정렬로 붙인 RGBA 이미지를 만든 뒤
+        (base_rgba, content_box) 튜플을 LRU 캐시에 저장/재사용한다.
+        content_box = (x0, y0, x1, y1) 는 실제 원본이 들어간 영역.
+        """
+        key = self._thumb_key(path, size)
+        # LRU hit
+        if key in self._thumb_base_cache:
+            base, box = self._thumb_base_cache.pop(key)
+            self._thumb_base_cache[key] = base, box
+            return base, box
+
+        # miss → 생성
+        try:
+            with Image.open(path) as im_src:
+                # EXIF 회전 보정 + RGB 변환
+                from PIL import ImageOps
+                im = ImageOps.exif_transpose(im_src).convert("RGB").copy()
+            # 썸네일 축소: 품질 대비 속도 좋게 BOX/BILINEAR 권장 (LANCZOS는 느림)
+            im.thumbnail((size, size), Image.Resampling.BILINEAR)
+            base = Image.new("RGBA", (size, size), (245, 245, 245, 255))
+            ox = (size - im.width) // 2
+            oy = (size - im.height) // 2
+            base.paste(im, (ox, oy))
+            content_box = (ox, oy, ox + im.width, oy + im.height)
+        except Exception:
+            base = Image.new("RGBA", (size, size), (200, 200, 200, 255))
+            content_box = (4, 4, size - 4, size - 4)
+
+        # LRU put
+        self._thumb_base_cache[key] = (base, content_box)
+        if len(self._thumb_base_cache) > self._thumb_base_cache_limit:
+            self._thumb_base_cache.popitem(last=False)
+        return base, content_box
 
     def clear(self):
         for w in self.inner.winfo_children():
@@ -84,6 +129,7 @@ class ThumbGallery(ttk.Frame):
         self._imgs.clear()
         self._order.clear()
         self._active = None
+        self._thumb_base_cache.clear()
         self._img_labels.clear()
         self._sel_bars.clear()
         self._update_scroll()
@@ -262,26 +308,24 @@ class ThumbGallery(ttk.Frame):
     # ---------- render ----------
 
     def _make_thumb_with_overlay(self, path: Path, size: int) -> ImageTk.PhotoImage:
-        try:
-            with Image.open(path) as im_src:
-                im = im_src.convert("RGB").copy()  # ← 복사 후 원본 핸들 닫힘
-            im.thumbnail((size, size), Image.Resampling.LANCZOS)
-            bg = Image.new("RGBA", (size, size), (245, 245, 245, 255))
-            ox = (size - im.width) // 2
-            oy = (size - im.height) // 2
-            bg.paste(im, (ox, oy))
-            content_box = (ox, oy, ox + im.width, oy + im.height)
-        except Exception:
-            bg = Image.new("RGBA", (size, size), (200, 200, 200, 255))
-            content_box = (4, 4, size - 4, size - 4)
+        # 1) 바탕(썸네일+회색배경)을 캐시에서 가져오기
+        base_rgba, content_box = self._get_thumb_base_rgba(path, size)
 
+        # 2) 오버레이는 “복사본” 위에만 그린다(캐시 오염 방지)
+        img = base_rgba.copy()
+
+        # 3) 앵커 마커/배지
         anchor = self._img_anchor_map.get(path, self._default_anchor)
-        _draw_anchor_marker(bg, content_box, anchor, color=(30, 144, 255), radius=6)
+        _draw_anchor_marker(img, content_box, anchor, color=(30, 144, 255), radius=6)
+
         if path in self._img_anchor_map:
-            _draw_badge(bg, text="•", bg=(76, 175, 80), fg=(255, 255, 255), pos="tr")  # 초록점
+            _draw_badge(img, text="•", bg=(76, 175, 80), fg=(255, 255, 255), pos="tr")  # 개별 앵커 배지
+
         if getattr(self, "_style_override_set", None) and path in self._style_override_set:
-            _draw_badge(bg, text="•", bg=(255, 152, 0), fg=(255, 255, 255), pos="tl")  # 주황점
-        return ImageTk.PhotoImage(bg.convert("RGB"))
+            _draw_badge(img, text="•", bg=(255, 152, 0), fg=(255, 255, 255), pos="tl")  # 스타일 오버라이드 배지
+
+        # 4) 바로 RGBA 그대로 전달 (추가 변환 불필요)
+        return ImageTk.PhotoImage(img)
 
     # ---------- scroll plumbing ----------
 

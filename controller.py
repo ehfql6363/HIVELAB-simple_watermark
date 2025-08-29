@@ -23,7 +23,7 @@ class AppController:
     def __init__(self):
         self._processed = 0
         self._canvas_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
-        self._canvas_cache_limit = 128  # ✅ 64→128 (자주 쓰는 캔버스 더 길게 보존)
+        self._canvas_cache_limit = 256
         self._cache_lock = threading.Lock()
 
         # ✅ 프리뷰 전용 캐시 (before/after가 동일 조건이면 즉시 반환)
@@ -296,7 +296,7 @@ class AppController:
             save_image(out_img, dst, quality=90, optimize=False, progressive=False)
 
         # ✅ CPU 수에 맞춰 워커 수 상향 + 과도한 스레드 방지
-        max_workers = min(16, max(4, (os.cpu_count() or 4) - 1))
+        max_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futs = [ex.submit(_do, rc, meta, src, w, h) for (rc, meta, src, w, h) in jobs]

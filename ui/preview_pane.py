@@ -106,7 +106,7 @@ class _CheckerCanvas(tk.Canvas):
             if self._hq_job_id:
                 try: self.after_cancel(self._hq_job_id)
                 except Exception: pass
-            self._hq_job_id = self.after(160, self._render_hq)
+            self._hq_job_id = self.after(120, self._render_hq)
         if not self._pending:
             self._pending = True
             self.after_idle(self._render_full)
