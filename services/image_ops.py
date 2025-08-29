@@ -1,8 +1,9 @@
 # services/image_ops.py
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFile
 from pathlib import Path
 from functools import lru_cache
 
+ImageFile.LOAD_TRUNCATED_IMAGES = True  # ✅ 손상 파일에도 견고하게
 
 def _stat_mtime_ns(path: Path) -> int:
     try:
@@ -10,7 +11,7 @@ def _stat_mtime_ns(path: Path) -> int:
     except Exception:
         return 0
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=256)  # ✅ 64→256 (대량 작업 시 캐시 히트율↑)
 def _load_image_cached_with_mtime(path_str: str, mtime_ns: int) -> Image.Image:
     p = Path(path_str)
     if not p.exists() or not p.is_file():
@@ -20,5 +21,4 @@ def _load_image_cached_with_mtime(path_str: str, mtime_ns: int) -> Image.Image:
         return im.convert("RGB").copy()
 
 def load_image(path: Path) -> Image.Image:
-    # 파일이 변경되면 mtime_ns가 바뀌어 캐시 자동 무효화
     return _load_image_cached_with_mtime(str(path), _stat_mtime_ns(path))

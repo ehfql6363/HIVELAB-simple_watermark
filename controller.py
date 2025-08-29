@@ -5,17 +5,17 @@ import os
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Tuple, Callable, Optional, Any
+from typing import Dict, List, Tuple, Callable, Optional
 import threading
 
 from PIL import Image
 
 from services.discovery import scan_posts
 from services.image_ops import load_image
-from services.resize import resize_contain
+from services.resize import resize_contain, resize_contain_fast  # ✅ fast 경로 사용
 from services.watermark import add_text_watermark
-from services.writer import save_image  # 고속 저장
-from settings import AppSettings, RootConfig, DEFAULT_WM_TEXT, IMAGES_VROOT
+from services.writer import save_image
+from settings import AppSettings, RootConfig, IMAGES_VROOT
 
 IMG_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
 
@@ -23,8 +23,24 @@ class AppController:
     def __init__(self):
         self._processed = 0
         self._canvas_cache: "OrderedDict[tuple, Image.Image]" = OrderedDict()
-        self._canvas_cache_limit = 64
+        self._canvas_cache_limit = 128  # ✅ 64→128 (자주 쓰는 캔버스 더 길게 보존)
         self._cache_lock = threading.Lock()
+
+        # ✅ 프리뷰 전용 캐시 (before/after가 동일 조건이면 즉시 반환)
+        self._preview_cache: "OrderedDict[tuple, tuple[Image.Image, Image.Image]]" = OrderedDict()
+        self._preview_cache_limit = 128
+        self._preview_lock = threading.Lock()
+
+        # ✅ 프리뷰 최대 긴 변(원본 그대로일 때도 화면용으로 다운스케일)
+        self._max_preview_side = 1400
+
+    # ---------- 내부 유틸 ----------
+    def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> str:
+        if getattr(rc, "wm_text", None) is not None and str(rc.wm_text).strip() == "":
+            return ""
+        if (getattr(rc, "wm_text", "") or "").strip():
+            return str(rc.wm_text).strip()
+        return (settings.default_wm_text or "").strip()
 
     def resolve_wm_for_meta(self, meta: dict, settings: AppSettings) -> str:
         if "wm_text_edit" in meta:
@@ -32,14 +48,76 @@ class AppController:
         rc: RootConfig = meta["root"]
         return self._resolve_wm_text(rc, settings)
 
+    def _cfg_key(self, cfg: dict | None) -> tuple:
+        """워터마크 설정을 캐시 키로 만들기(불변 튜플). None이면 빈 키."""
+        if not cfg:
+            return ()
+        return (
+            (cfg.get("text") or "").strip(),
+            int(cfg.get("opacity", 0)),
+            int(cfg.get("scale_pct", 0)),
+            tuple(cfg.get("fill", (0, 0, 0))),
+            tuple(cfg.get("stroke", (255, 255, 255))),
+            int(cfg.get("stroke_w", 0)),
+            str(cfg.get("font_path") or ""),
+        )
+
+    def _choose_anchor(self, meta: dict, settings: AppSettings, src: Optional[Path] = None):
+        if src is not None:
+            img_map = meta.get("img_anchors") or {}
+            if src in img_map:
+                return img_map[src]
+        if meta.get("anchor"):
+            return meta["anchor"]
+        return settings.wm_anchor
+
+    def _canvas_key(self, src: Path, target: Tuple[int, int], bg_rgb: Tuple[int, int, int]):
+        try:
+            mt = src.stat().st_mtime_ns
+        except Exception:
+            mt = 0
+        return (str(src), mt, int(target[0]), int(target[1]), tuple(bg_rgb))
+
+    def _get_resized_canvas(self, src: Path, target: Tuple[int, int], bg_rgb: Tuple[int, int, int], *, fast: bool = False) -> Image.Image:
+        """원본을 target에 contain 후 배경을 깔아 준 캔버스를 LRU 캐시."""
+        key = self._canvas_key(src, target, bg_rgb) + (1 if fast else 0,)  # ✅ fast 여부도 키에 포함
+        with self._cache_lock:
+            if key in self._canvas_cache:
+                im = self._canvas_cache.pop(key)
+                self._canvas_cache[key] = im
+                return im
+
+        base = load_image(src)  # RGB Image (캐시됨)
+        if not isinstance(base, Image.Image):
+            raise ValueError(f"이미지 로드 실패: {src}")
+
+        if tuple(target) == (0, 0):
+            canvas = base
+        else:
+            canvas = (resize_contain_fast if fast else resize_contain)(base, target, bg_rgb)
+
+        with self._cache_lock:
+            self._canvas_cache[key] = canvas
+            if len(self._canvas_cache) > self._canvas_cache_limit:
+                self._canvas_cache.popitem(last=False)
+
+        return canvas
+
+    def _suggest_preview_target(self, wh: tuple[int, int]) -> tuple[int, int]:
+        """원본 그대로(0,0)일 때 화면용으로 다운샘플 목표 크기 제안."""
+        w, h = map(int, wh)
+        if w == 0 or h == 0:
+            return (0, 0)
+        m = float(self._max_preview_side)
+        if max(w, h) <= m:
+            return (w, h)
+        if w >= h:
+            return (int(m), int(round(h * (m / w))))
+        else:
+            return (int(round(w * (m / h))), int(m))
+
+    # ---------- 설정 병합 ----------
     def resolve_wm_config(self, meta: dict, settings: AppSettings, src: Optional[Path]) -> Optional[dict]:
-        """
-        최종 워터마크 설정 병합:
-        - 기본: settings (색/외곽선/불투명/스케일/폰트)
-        - 텍스트: 게시물 오버라이드(meta["wm_text_edit"]) → 루트/기본
-        - 이미지 오버라이드(meta["img_overrides"][src])가 있으면 해당 키만 덮어씀
-        - text가 ""(빈문자)면 '워터마크 없음' 처리로 None 반환
-        """
         base = {
             "text": self.resolve_wm_for_meta(meta, settings),
             "opacity": settings.wm_opacity,
@@ -58,72 +136,24 @@ class AppController:
             return None
         return cfg
 
-    def _flat_output_dir(self, out_root: Path) -> Path:
-        """
-        항상 출력 루트에만 저장(폴더 감싸지 않음).
-        """
-        try:
-            out_root.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-        return out_root
-
-    def _filename_for(self, src: Path, w: int, h: int) -> str:
-        """
-        크기 지정 시 파일명에 _{WxH} 태그를 붙여 다중 크기 저장 시 충돌 방지.
-        원본 크기(0,0)일 땐 태그 생략.
-        """
-        size_tag = "" if (w, h) == (0, 0) else f"_{w}x{h}"
-        return f"{src.stem}{size_tag}_wm.jpg"
-
-    def _unique_path(self, out_dir: Path, filename: str) -> Path:
-        """
-        같은 이름이 있으면 _1, _2 … 를 붙여 고유 경로를 만든다.
-        """
-        dst = out_dir / filename
-        if not dst.exists():
-            return dst
-        stem = Path(filename).stem
-        suffix = Path(filename).suffix
-        i = 1
-        while True:
-            cand = out_dir / f"{stem}_{i}{suffix}"
-            if not cand.exists():
-                return cand
-            i += 1
-
-    def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> str:
-        if getattr(rc, "wm_text", None) is not None and str(rc.wm_text).strip() == "":
-            return ""
-        if (getattr(rc, "wm_text", "") or "").strip():
-            return str(rc.wm_text).strip()
-        return (settings.default_wm_text or "").strip()
-
     # ---------- 스캔 ----------
-    def scan_posts_multi(
-            self,
-            roots: List[RootConfig],
-            dropped_images: Optional[List[Path]] = None
-    ) -> Dict[str, dict]:
+    def scan_posts_multi(self, roots: List[RootConfig], dropped_images: Optional[List[Path]] = None) -> Dict[str, dict]:
         posts: Dict[str, dict] = {}
         dropped_images = list(dropped_images or [])
         for rc in roots:
             root = rc.path
-
-            # 🔹 가상 루트: 드롭한 이미지 모음
             if str(root) == IMAGES_VROOT:
                 imgs = [p for p in dropped_images if p.is_file() and p.suffix.lower() in IMG_EXTS]
                 if imgs:
-                    key = "이미지"  # 게시물 리스트에 보일 이름
+                    key = "이미지"
                     posts[key] = {
                         "root": rc,
                         "post_name": key,
                         "files": imgs,
-                        "post_dir": root,  # 더미(실제 폴더 아님)
+                        "post_dir": root,
                     }
                 continue
 
-            # 🔹 일반 루트: 기존 폴더 스캔
             sub = scan_posts(root)
             for post_name, files in sub.items():
                 if post_name == "__SELF__":
@@ -142,44 +172,6 @@ class AppController:
                 }
         return posts
 
-    # ---------- 공통 유틸 ----------
-    def _choose_anchor(self, meta: dict, settings: AppSettings, src: Optional[Path] = None):
-        if src is not None:
-            img_map = meta.get("img_anchors") or {}
-            if src in img_map:
-                return img_map[src]
-        if meta.get("anchor"):
-            return meta["anchor"]
-        return settings.wm_anchor
-
-    def _canvas_key(self, src: Path, target: Tuple[int, int], bg_rgb: Tuple[int, int, int]):
-        try:
-            mt = src.stat().st_mtime_ns
-        except Exception:
-            mt = 0
-        return (str(src), mt, int(target[0]), int(target[1]), tuple(bg_rgb))
-
-    def _get_resized_canvas(self, src: Path, target: Tuple[int, int], bg_rgb: Tuple[int, int, int]) -> Image.Image:
-        key = self._canvas_key(src, target, bg_rgb)
-        with self._cache_lock:
-            if key in self._canvas_cache:
-                im = self._canvas_cache.pop(key)
-                self._canvas_cache[key] = im
-                return im
-
-        base = load_image(src)  # RGB Image 보장
-        if not isinstance(base, Image.Image):
-            raise ValueError(f"이미지 로드 실패(타입 불일치): {src}")
-
-        canvas = base if tuple(target) == (0, 0) else resize_contain(base, target, bg_rgb)
-
-        with self._cache_lock:
-            self._canvas_cache[key] = canvas
-            if len(self._canvas_cache) > self._canvas_cache_limit:
-                self._canvas_cache.popitem(last=False)
-
-        return canvas
-
     # ---------- 미리보기 ----------
     def preview_by_key(self, key: str, posts: Dict[str, dict], settings: AppSettings, selected_src: Optional[Path] = None) -> tuple[Image.Image, Image.Image]:
         meta = posts.get(key)
@@ -187,33 +179,60 @@ class AppController:
             raise ValueError("No images in this post.")
         src = selected_src or meta["files"][0]
 
-        before = load_image(src)
+        # ✅ 타겟 계산: '원본 그대로(0,0)'이면 화면용 축소 목표 사용
         tgt = settings.sizes[0]
-        canvas = before.copy() if tuple(tgt) == (0, 0) else self._get_resized_canvas(src, tgt, settings.bg_color).copy()
+        if tuple(tgt) == (0, 0):
+            # 원본 크기 확인 후 화면용 목표 산출
+            base = load_image(src)
+            tgt = self._suggest_preview_target(base.size)
 
-        wm_cfg = self.resolve_wm_config(meta, settings, src)
-        if not wm_cfg:
-            return before, canvas
-
+        # ✅ 캐시 키
         anchor = self._choose_anchor(meta, settings, src)
-        after = add_text_watermark(
-            canvas,
-            text=wm_cfg["text"],
-            opacity_pct=int(wm_cfg["opacity"]),
-            scale_pct=int(wm_cfg["scale_pct"]),
-            fill_rgb=tuple(wm_cfg["fill"]),
-            stroke_rgb=tuple(wm_cfg["stroke"]),
-            stroke_width=int(wm_cfg["stroke_w"]),
-            anchor_norm=anchor,
-            font_path=Path(wm_cfg["font_path"]) if wm_cfg.get("font_path") else None,
+        wm_cfg = self.resolve_wm_config(meta, settings, src)
+        pkey = (
+            str(src),
+            src.stat().st_mtime_ns if src.exists() else 0,
+            int(tgt[0]), int(tgt[1]),
+            tuple(settings.bg_color),
+            tuple(anchor),
+            self._cfg_key(wm_cfg),
         )
-        return before, after
+
+        with self._preview_lock:
+            if pkey in self._preview_cache:
+                val = self._preview_cache.pop(pkey)
+                self._preview_cache[pkey] = val
+                return val
+
+        # ✅ 프리뷰는 빠른 리사이즈 경로 사용(fast=True)
+        before_canvas = self._get_resized_canvas(src, tgt, settings.bg_color, fast=True).copy()
+
+        if not wm_cfg:
+            after_canvas = before_canvas.copy()
+        else:
+            after_canvas = add_text_watermark(
+                before_canvas.copy(),
+                text=wm_cfg["text"],
+                opacity_pct=int(wm_cfg["opacity"]),
+                scale_pct=int(wm_cfg["scale_pct"]),
+                fill_rgb=tuple(wm_cfg["fill"]),
+                stroke_rgb=tuple(wm_cfg["stroke"]),
+                stroke_width=int(wm_cfg["stroke_w"]),
+                anchor_norm=anchor,
+                font_path=Path(wm_cfg["font_path"]) if wm_cfg.get("font_path") else None,
+            )
+
+        with self._preview_lock:
+            self._preview_cache[pkey] = (before_canvas, after_canvas)
+            if len(self._preview_cache) > self._preview_cache_limit:
+                self._preview_cache.popitem(last=False)
+
+        return before_canvas, after_canvas
 
     # ---------- 출력 경로 ----------
     def _output_dir_for(self, src: Path, rc: RootConfig, out_root: Path, post_name: str) -> Path:
         if str(rc.path) == IMAGES_VROOT:
             return out_root
-
         base = out_root / rc.path.name
         try:
             rel = src.parent.relative_to(rc.path)
@@ -246,7 +265,8 @@ class AppController:
 
         def _do(rc: RootConfig, meta: dict, src: Path, w: int, h: int) -> None:
             anchor = self._choose_anchor(meta, settings, src)
-            canvas = self._get_resized_canvas(src, (w, h), settings.bg_color)
+            # ✅ 배치는 정확도 우선(LANCZOS). 단, 0x0(원본)은 스킵.
+            canvas = self._get_resized_canvas(src, (w, h), settings.bg_color, fast=False)
 
             wm_cfg = self.resolve_wm_config(meta, settings, src)
             if not wm_cfg:
@@ -264,35 +284,19 @@ class AppController:
                     font_path=Path(wm_cfg["font_path"]) if wm_cfg.get("font_path") else None,
                 )
 
-            # 저장 경로 결정
-            if str(rc.path) == IMAGES_VROOT:
-                # ✅ 드롭한 '이미지' 가상 루트: 출력 루트에 플랫 저장
-                out_dir = settings.output_root
-            else:
-                # ✅ 폴더에서 온 항목: 계정/게시물 구조 보존
-                out_dir = self._output_dir_for(src, rc, settings.output_root, meta["post_name"])
-
-            # 디렉터리 보장
+            out_dir = settings.output_root if str(rc.path) == IMAGES_VROOT else self._output_dir_for(src, rc, settings.output_root, meta["post_name"])
             try:
                 out_dir.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
 
-            # 파일명: 크기 태그(0,0이면 생략) + _wm.jpg
             fname = self._filename_for(src, w, h)
-
-            # 이름 충돌 방지(특히 플랫 저장 시 중요)
             dst = self._unique_path(out_dir, fname)
 
-            save_image(
-                out_img,
-                dst,
-                quality=90,
-                optimize=False,
-                progressive=False
-            )
+            save_image(out_img, dst, quality=90, optimize=False, progressive=False)
 
-        max_workers = min(8, (os.cpu_count() or 4))
+        # ✅ CPU 수에 맞춰 워커 수 상향 + 과도한 스레드 방지
+        max_workers = min(16, max(4, (os.cpu_count() or 4) - 1))
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futs = [ex.submit(_do, rc, meta, src, w, h) for (rc, meta, src, w, h) in jobs]
