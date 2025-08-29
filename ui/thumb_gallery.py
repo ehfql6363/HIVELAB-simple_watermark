@@ -54,6 +54,8 @@ class ThumbGallery(ttk.Frame):
         self.cols = int(cols)
         self.fixed_height = int(height)
 
+        self._sel_bars: Dict[Path, tk.Frame] = {}
+
         self.canvas = tk.Canvas(self, highlightthickness=0, height=self.fixed_height)
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vbar.set)
@@ -85,6 +87,7 @@ class ThumbGallery(ttk.Frame):
         self._imgs.clear()
         self._order.clear()
         self._active = None
+        self._sel_bars.clear()
         self._update_scroll()
 
     def set_files(self, files: List[Path],
@@ -99,24 +102,45 @@ class ThumbGallery(ttk.Frame):
         self._order = list(files)
         size, pad = self.thumb_size, 8
 
+        # 라벨 예상 높이를 고정(두 줄 기준) → 타일 높이 고정
+        label_h = 34
+        tile_w = size + 16
+        tile_h = size + 16 + label_h
+
         for i, p in enumerate(files):
             r, c = divmod(i, self.cols)
-            tile = tk.Frame(self.inner, bd=1, relief="groove", takefocus=1)
-            tile.grid(row=r, column=c, padx=pad, pady=pad, sticky="nsew")
 
+            # ★ 타일 고정 크기 + grid_propagate(False)로 자식 변경에도 크기 불변
+            tile = tk.Frame(self.inner, bd=1, relief="groove", width=tile_w, height=tile_h, takefocus=1)
+            tile.grid(row=r, column=c, padx=pad, pady=pad, sticky="nsew")
+            tile.grid_propagate(False)
+
+            # 컨텐츠 컨테이너
+            body = tk.Frame(tile, bd=0, relief="flat")
+            body.pack(fill="both", expand=True)
+
+            # 이미지
             tkim = self._make_thumb_with_overlay(p, size)
-            lbl_img = tk.Label(tile, image=tkim, takefocus=0)
+            lbl_img = tk.Label(body, image=tkim, takefocus=0)
             lbl_img.image = tkim
             self._imgs[p] = tkim
             lbl_img.pack(padx=4, pady=(4, 0))
 
-            lbl_txt = tk.Label(tile, text=p.name, wraplength=size, justify="center", takefocus=0)
-            lbl_txt.pack(padx=4, pady=(2, 6))
+            # 파일명
+            lbl_txt = tk.Label(body, text=p.name, wraplength=size, justify="center", takefocus=0)
+            lbl_txt.pack(padx=4, pady=(2, 0))
+
+            # ★ 항상 존재하는 하단 선택 바(높이 3px). 기본은 “투명처럼 보이는” 색.
+            sel_bar = tk.Frame(tile, height=3, bg=tile.cget("background"))
+            sel_bar.pack(side="bottom", fill="x")
+            self._sel_bars[p] = sel_bar
 
             def _activate(_=None, path=p):
                 self.set_active(path, fire=True)
-                try: self.focus_set()
-                except Exception: pass
+                try:
+                    self.focus_set()
+                except Exception:
+                    pass
 
             for w in (tile, lbl_img, lbl_txt):
                 w.bind("<Button-1>", _activate)
@@ -128,16 +152,84 @@ class ThumbGallery(ttk.Frame):
         self._update_scroll()
 
     def set_active(self, path: Optional[Path], fire: bool = False):
+        # 같은 항목이면(특히 콜백 이후 내부에서 다시 부르는 케이스) 아무 것도 안 함
+        if path == self._active:
+            return
+
+        # 이전 선택 표시 되돌리기 (크기/레이아웃은 건드리지 않음)
         if self._active and self._active in self._tiles:
-            self._tiles[self._active].configure(bd=1, relief="groove")
+            try:
+                self._tiles[self._active].configure(bd=1, relief="groove")
+            except Exception:
+                pass
 
         self._active = path
 
         if path and path in self._tiles:
-            self._tiles[path].configure(bd=2, relief="solid")
-            self._scroll_into_view(path)
+            # 선택 표시 (크기 변화 최소화: 기존과 동일하게)
+            try:
+                self._tiles[path].configure(bd=2, relief="solid")
+            except Exception:
+                pass
+
+            # 🔑 스크롤은 '사용자 동작(fire=True)'일 때만 수행
+            if fire:
+                try:
+                    # 기준이 되는 현재 top frac을 잡아두고,
+                    prev_top_frac = self.canvas.yview()[0]
+                except Exception:
+                    prev_top_frac = None
+
+                # 레이아웃이 안정된 뒤 최소 이동
+                self.after_idle(lambda p=path, f=prev_top_frac: self._scroll_into_view(p))
+
+            # 콜백은 fire 여부와 상관 없이 필요 시 호출
             if fire and callable(self.on_activate):
                 self.on_activate(path)
+
+    def _scroll_into_view_with_prev(self, path: Path, prev_top_frac: float | None):
+        try:
+            self.update_idletasks()
+
+            tile = self._tiles.get(path)
+            if not tile:
+                return
+
+            bbox_all = self.canvas.bbox("all")
+            if not bbox_all:
+                return
+            content_h = bbox_all[3] - bbox_all[1]
+            can_h = self.canvas.winfo_height()
+            if can_h <= 0 or content_h <= 0:
+                return
+            scrollable = max(1, content_h - can_h)
+
+            # 이전 top 위치 기준으로 판단(없으면 현재 위치)
+            if prev_top_frac is not None:
+                top_px = max(0, min(scrollable, int(prev_top_frac * scrollable)))
+            else:
+                top_px = int(self.canvas.canvasy(0))
+
+            tile_y = tile.winfo_y()
+            tile_h = tile.winfo_height()
+            margin = 8
+
+            top = top_px
+            bottom = top + can_h
+
+            if (tile_y - margin) < top:
+                top = tile_y - margin
+            elif (tile_y + tile_h + margin) > bottom:
+                top = tile_y + tile_h + margin - can_h
+
+            top = max(0, min(scrollable, top))
+
+            cur_top = int(self.canvas.canvasy(0))
+            if abs(top - cur_top) >= 1:
+                self.canvas.yview_moveto(top / float(scrollable))
+
+        except Exception:
+            pass
 
     def set_badged(self, paths: set[Path]):
         pass
