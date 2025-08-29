@@ -94,6 +94,11 @@ class MainWindow(BaseTk):
         self.post_list = PostList(
             post_frame,
             on_select=self.on_select_post,
+            resolve_wm=self._resolve_wm_text_for_list,
+            resolve_img_wm=self._resolve_img_wm_text_for_list,
+            on_wmtext_change=self._on_post_wmtext_change,
+            on_image_wmtext_change=self._on_image_wmtext_change,
+            on_image_select=self._on_postlist_image_select,
         )
         self.post_list.pack(fill="both", expand=True)
         left.add(post_frame, weight=3)
@@ -161,6 +166,95 @@ class MainWindow(BaseTk):
 
         right.bind("<Configure>", _debounced_enforce)
         self.after(0, _apply_right_sash)
+
+    def _effective_wm_text_for(self, meta: dict, path: Path | None) -> str:
+        """이미지/게시물/루트/앱설정 순으로 워터마크 텍스트 결정."""
+        # 1) 이미지 개별 텍스트
+        if path is not None:
+            img_edits = meta.get("img_wm_text_edits") or {}
+            if path in img_edits:
+                return (img_edits[path] or "").strip()
+
+        # 2) 게시물 인라인 편집 텍스트
+        edited = (meta.get("wm_text_edit") or "").strip()
+        if edited != "":
+            return edited  # 빈문자면 '없음' 취지로 그대로 빈값 유지
+
+        # 3) 루트 설정 (""이면 '없음')
+        root = meta["root"]
+        raw = getattr(root, "wm_text", None)
+        if raw is None:
+            # None → 앱 기본
+            return (self.app_settings.default_wm_text or "").strip()
+        return raw.strip()  # "" 허용(없음)
+
+    def _effective_wm_cfg_for(self, meta: dict, path: Path | None) -> dict | None:
+        """프리뷰/에디터에 내려줄 풀 옵션 딕셔너리(없음이면 None)."""
+        txt = self._effective_wm_text_for(meta, path)
+        if txt == "":
+            return None  # 워터마크 없음
+        s = self._collect_settings()  # 이미 있는 함수: 현재 UI값을 읽어 AppSettings 만들던 것
+        return {
+            "text": txt,
+            "opacity": int(s.wm_opacity),
+            "scale_pct": int(s.wm_scale_pct),
+            "fill": tuple(s.wm_fill_color),
+            "stroke": tuple(s.wm_stroke_color),
+            "stroke_w": int(s.wm_stroke_width),
+            "font_path": str(s.wm_font_path) if s.wm_font_path else "",
+        }
+
+    def _resolve_img_wm_text_for_list(self, meta: dict, path: Path) -> str:
+        """
+        이미지 레벨 표시 텍스트:
+        - meta["img_wm_text_edits"][path]가 있으면 우선
+        - 없으면 게시물 레벨에서 산출한 텍스트
+        """
+        img_edits = meta.get("img_wm_text_edits") or {}
+        if path in img_edits:
+            return (img_edits[path] or "").strip()
+        return self._resolve_wm_text_for_list(meta)
+
+    def _on_image_wmtext_change(self, post_key: str, path: Path, value: str):
+        """
+        이미지 인라인 편집 반영:
+        - 현재 그 이미지를 보고 있으면, 에디터/프리뷰 즉시 갱신
+        """
+        if not self.posts:
+            return
+        meta = self.posts.get(post_key)
+        if not meta:
+            return
+
+        if self._active_src == path:
+            cfg = self._effective_wm_cfg_for(meta, path)
+            if hasattr(self, "wm_editor"):
+                try:
+                    self.wm_editor.set_active_image_and_defaults(path, cfg)
+                except Exception:
+                    pass
+        # 프리뷰 갱신
+        try:
+            self.on_preview()
+        except Exception:
+            pass
+
+    def _on_postlist_image_select(self, post_key: str, path: Path):
+        # 활성 이미지 업데이트
+        self._active_src = path
+        self.gallery.set_active(path, fire=False)
+
+        # 에디터 값 채우기(개별 오버라이드 or 상속값)
+        meta = self.posts.get(post_key) or {}
+        cfg = self._effective_wm_cfg_for(meta, path)
+        if hasattr(self, "wm_editor"):  # 에디터 Frame/위젯 인스턴스
+            try:
+                self.wm_editor.set_active_image_and_defaults(path, cfg)
+            except Exception:
+                pass
+
+        # 프리뷰 갱신
+        self.on_preview()
 
     # ──────────────────────────────────────────────────────────────────────
     # 옵션/루트 변경 → 게시물 등록(스캔 버튼 삭제를 대체)
@@ -255,96 +349,81 @@ class MainWindow(BaseTk):
     # 프리뷰 (개별 오버라이드 지원)
     # ──────────────────────────────────────────────────────────────────────
     def on_preview(self):
+        # 1) 선택/유효성 체크
         key = self.post_list.get_selected_post()
-        if not key:
-            return
-        if key not in self.posts or not self.posts[key]["files"]:
-            messagebox.showinfo("미리보기", "이 게시물에는 이미지가 없습니다.")
+        if not key or key not in self.posts:
             return
 
-        settings = self._collect_settings()
         meta = self.posts[key]
+        files = meta.get("files") or []
+        if not files:
+            from tkinter import messagebox
+            messagebox.showinfo("미리보기", "이 항목에는 이미지가 없습니다.")
+            return
 
-        # 워터마크 텍스트(루트 설정 우선)
-        _raw = meta["root"].wm_text
-        _root_txt = ("" if _raw is None else _raw.strip())
-        wm_text_default = "" if _root_txt == "" else (_root_txt or settings.default_wm_text)
+        # 2) 현재 활성 이미지가 없으면 첫 번째 이미지로
+        if self._active_src is None or self._active_src not in files:
+            self._active_src = files[0]
 
-        # 프리뷰 오버레이(유령) 설정
-        wm_cfg_overlay = None
-        if wm_text_default:
-            wm_cfg_overlay = {
-                "text": wm_text_default,
-                "opacity": settings.wm_opacity,
-                "scale_pct": settings.wm_scale_pct,
-                "fill": settings.wm_fill_color,
-                "stroke": settings.wm_stroke_color,
-                "stroke_w": settings.wm_stroke_width,
-                "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
-            }
-
-        # 개별 이미지 오버라이드(있으면 프리뷰/유령 모두 해당 설정 우선)
-        active_src = self._active_src
-        overrides = meta.get("img_overrides") or {}
-        ov = overrides.get(active_src) if active_src else None
-        if ov:
-            wm_cfg_overlay = {
-                "text": ov.get("text", ""),
-                "opacity": int(ov.get("opacity", settings.wm_opacity)),
-                "scale_pct": int(ov.get("scale_pct", settings.wm_scale_pct)),
-                "fill": tuple(ov.get("fill", settings.wm_fill_color)),
-                "stroke": tuple(ov.get("stroke", settings.wm_stroke_color)),
-                "stroke_w": int(ov.get("stroke_w", settings.wm_stroke_width)),
-                "font_path": ov.get("font_path", str(settings.wm_font_path) if settings.wm_font_path else ""),
-            }
-
-        self.preview.set_wm_preview_config(wm_cfg_overlay)
-
-        # 앵커(개별 → 게시물 → 앱 기본)
+        # 3) 앵커 계산(개별 → 게시물 기본 → 앱 기본)
         img_anchor_map = meta.get("img_anchors") or {}
-        if active_src and active_src in img_anchor_map:
-            anchor = tuple(img_anchor_map[active_src])
+        if self._active_src in img_anchor_map:
+            anchor = tuple(img_anchor_map[self._active_src])
         elif meta.get("anchor"):
             anchor = tuple(meta["anchor"])
         else:
             anchor = tuple(self.app_settings.wm_anchor)
-        self._wm_anchor = anchor
+        self._wm_anchor = (float(anchor[0]), float(anchor[1]))
 
-        # --- 프리뷰 이미지 생성 ---
+        # 4) 현재 UI 설정 수집
+        settings = self._collect_settings()
+
+        # 5) 프리뷰/에디터에서 실제로 쓸 워터마크 텍스트/옵션 계산
+        #    (이미지 개별 → 게시물 인라인 → 루트 → 앱 기본 순서)
+        effective_txt = self._effective_wm_text_for(meta, self._active_src)
+        cfg_for_preview = self._effective_wm_cfg_for(meta, self._active_src)  # dict 또는 None
+
+        # 6) 프리뷰 전용 섀도우 posts: root.wm_text 를 effective_txt로 교체
+        #    (컨트롤러는 root.wm_text만 보기 때문에 여기서만 임시로 바꿔줌)
+        from settings import RootConfig
+        shadow_posts = dict(self.posts)
+        shadow_meta = dict(meta)
+        rc = meta["root"]
+        shadow_meta["root"] = RootConfig(path=rc.path, wm_text=effective_txt)  # ""도 허용(워터마크 없음)
+        shadow_posts[key] = shadow_meta
+
+        # 7) 컨트롤러로부터 Before/After 생성
         try:
-            if ov and active_src:
-                # 오버라이드가 있으면 수동 합성
-                before = load_image(active_src)
-                tgt = settings.sizes[0]
-                canvas = before.copy() if tuple(tgt) == (0, 0) else resize_contain(before, tgt, settings.bg_color).copy()
-                txt = (ov.get("text") or "").strip()
-                if txt == "":
-                    after = canvas
-                else:
-                    after = add_text_watermark(
-                        canvas,
-                        text=txt,
-                        opacity_pct=int(ov.get("opacity", settings.wm_opacity)),
-                        scale_pct=int(ov.get("scale_pct", settings.wm_scale_pct)),
-                        fill_rgb=tuple(ov.get("fill", settings.wm_fill_color)),
-                        stroke_rgb=tuple(ov.get("stroke", settings.wm_stroke_color)),
-                        stroke_width=int(ov.get("stroke_w", settings.wm_stroke_width)),
-                        anchor_norm=anchor,
-                        font_path=Path(ov.get("font_path")) if ov.get("font_path") else settings.wm_font_path,
-                    )
-                before_img = load_image(active_src)  # 원본
-                after_img = after
-            else:
-                # 기존 기본 프리뷰 경로
-                before_img, after_img = self.controller.preview_by_key(
-                    key, self.posts, settings, selected_src=active_src
-                )
+            before_img, after_img = self.controller.preview_by_key(
+                key,
+                shadow_posts,
+                settings,
+                selected_src=self._active_src
+            )
         except Exception as e:
+            from tkinter import messagebox
             messagebox.showerror("미리보기 오류", str(e))
             return
 
+        # 8) 프리뷰 반영
         self.preview.show(before_img, after_img)
-        self.preview.set_anchor(anchor)
+        self.preview.set_anchor(self._wm_anchor)
+        # 유령 워터마크(미리보기 오버레이) 설정
+        self.preview.set_wm_preview_config(cfg_for_preview)
+
+        # 9) 하단 “개별 이미지 워터마크” 에디터에도 동일 값 반영
+        if hasattr(self, "wm_editor") and self.wm_editor:
+            try:
+                self.wm_editor.set_active_image_and_defaults(self._active_src, cfg_for_preview)
+            except Exception:
+                pass
+
+        # 10) 썸네일 활성 표시 싱크(있으면)
+        if hasattr(self, "gallery") and self.gallery:
+            try:
+                self.gallery.set_active(self._active_src, fire=False)
+            except Exception:
+                pass
 
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, _roots,
@@ -375,6 +454,48 @@ class MainWindow(BaseTk):
             wm_anchor=self.app_settings.wm_anchor,
             wm_font_path=wm_font_path,
         )
+
+    def _resolve_wm_text_for_list(self, meta: dict) -> str:
+        """
+        게시물 레벨 표시 텍스트:
+        - meta["wm_text_edit"]가 있으면 우선
+        - 없으면 root.wm_text (빈문자 ""면 '없음' 취지로 빈 처리)
+        - 둘 다 없으면 settings.default_wm_text
+        """
+        root = meta["root"]
+        edited = (meta.get("wm_text_edit") or "").strip()
+        if edited != "":
+            return edited
+        raw = root.wm_text
+        if raw is None:
+            # None → 기본 텍스트 사용
+            return (self.app_settings.default_wm_text or "").strip()
+        raw = raw.strip()
+        if raw == "":
+            # 빈 문자열 → “워터마크 없음”
+            return ""
+        return raw
+
+    def _on_post_wmtext_change(self, post_key: str, value: str):
+        """
+        게시물 인라인 편집 반영:
+        - 현재 그 게시물을 보고 있으면, 프리뷰/에디터/썸네일 즉시 갱신
+        """
+        if not self.posts:
+            return
+        meta = self.posts.get(post_key)
+        if not meta:
+            return
+        # 프리뷰 갱신
+        try:
+            # 에디터는 '이미지 선택 중일 때'만 의미가 있으므로, 선택 없으면 건너뜀
+            if self._active_src:
+                cfg = self._effective_wm_cfg_for(meta, self._active_src)
+                if hasattr(self, "wm_editor"):
+                    self.wm_editor.set_active_image_and_defaults(self._active_src, cfg)
+            self.on_preview()
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────────────────────────────────
     # 앵커 변경/적용/해제
