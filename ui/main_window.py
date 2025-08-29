@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox
@@ -8,11 +11,10 @@ from typing import Dict, Optional, Tuple
 
 from controller import AppController
 from settings import AppSettings, DEFAULT_WM_TEXT, hex_to_rgb, RootConfig
-from ui.image_wm_editor import ImageWMEditor  # ★ 분리된 에디터
+from ui.image_wm_editor import ImageWMEditor
 from ui.options_panel import OptionsPanel
 from ui.post_list import PostList
 from ui.preview_pane import PreviewPane
-from ui.status_bar import StatusBar
 from ui.thumb_gallery import ThumbGallery
 
 # DnD 지원 루트
@@ -26,7 +28,7 @@ class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
         super().__init__()
         self.title("게시물 워터마크 & 리사이즈")
-        self.geometry("1180x860")
+        self.geometry("1180x960")
         # 창 너무 작아질 때 하단 상태바가 가려지지 않도록 최소 크기
         try: self.minsize(1024, 720)
         except Exception: pass
@@ -50,8 +52,8 @@ class MainWindow(BaseTk):
         self._build_middle(self)
 
         # ── 하단 상태바 ───────────────────────────────────────────────────
-        self.status = StatusBar(self, on_start=self.on_start_batch)
-        self.status.pack(side="bottom", fill="x", padx=8, pady=8)
+        # self.status = StatusBar(self, on_start=self.on_start_batch)
+        # self.status.pack(side="bottom", fill="x", padx=8, pady=8)
 
         # 옵션 패널 초기값 채우기
         self.opt.set_initial_options(self.app_settings)
@@ -66,6 +68,28 @@ class MainWindow(BaseTk):
         self._on_options_changed()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _open_output_folder(self):
+        # 우선순위: 현재 옵션창 값 → 앱 저장값
+        out_root_str = (self.opt.get_output_root_str() or "").strip()
+        path = Path(out_root_str) if out_root_str else (self.app_settings.output_root or None)
+        if not path:
+            messagebox.showinfo("출력 폴더", "출력 루트 폴더를 먼저 지정하세요.")
+            return
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as e:
+            messagebox.showerror("열기 오류", str(e))
 
     def _on_post_wmtext_change(self, post_key: str, value: str):
         """
@@ -101,6 +125,25 @@ class MainWindow(BaseTk):
         # 버튼바(스캔/미리보기) 제거 요구사항 반영 → 오직 옵션 패널만
         self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
         self.opt.pack(fill="x")
+
+        actions = ttk.Frame(parent)
+        actions.pack(fill="x", pady=(6, 0))  # 한 줄 아래, 오른쪽 정렬용 컨테이너
+
+        right = ttk.Frame(actions)
+        right.pack(side="right")  # 오른쪽 붙이기
+
+        self.header_prog = ttk.Progressbar(right, length=360, mode="determinate")
+        self.header_prog.pack(side="left", padx=(0, 8))
+
+        self.btn_start = ttk.Button(right, text="시작 (F5)", command=self.on_start_batch)
+        self.btn_start.pack(side="left", padx=(0, 6))
+
+        self.btn_open = ttk.Button(right, text="출력 폴더 열기 (F6)", command=self._open_output_folder)
+        self.btn_open.pack(side="left")
+
+        # 단축키 바인딩
+        self.bind_all("<F5>", lambda e: self.on_start_batch())
+        self.bind_all("<F6>", lambda e: self._open_output_folder())
 
     def _build_middle(self, parent):
         # 가로 분할: 좌(게시물+에디터) / 우(프리뷰+썸네일)
@@ -654,18 +697,37 @@ class MainWindow(BaseTk):
             messagebox.showerror("출력 폴더", f"출력 루트를 만들 수 없습니다:\n{e}")
             return
 
-        self.status.set_output_root(out_root)
-        self.status.enable_open_button(True)
-
+        # 진행바 초기화
         total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
-        self.status.reset(total)
+        try:
+            self.header_prog.configure(maximum=total, value=0)
+        except Exception:
+            pass
 
-        def on_prog(n): self.status.update_progress(n)
+        # 버튼 상태
+        self.btn_start.configure(state="disabled")
+        self.btn_open.configure(state="disabled")
+
+        def on_prog(n):
+            try:
+                self.header_prog.configure(value=n)
+                self.header_prog.update_idletasks()
+            except Exception:
+                pass
+
         def on_done(n, _out=out_root):
-            self.status.finish(n)
-            self.status.log_info(f"저장 위치: {_out}")
-            self.status.enable_open_button(True)
-        def on_err(msg): self.status.log_error(msg)
+            try:
+                self.header_prog.configure(value=total)
+            except Exception:
+                pass
+            # 버튼 복구
+            self.btn_start.configure(state="normal")
+            self.btn_open.configure(state="normal")
+            messagebox.showinfo("완료", f"총 {n}개 처리 완료.\n저장 위치: {_out}")
+
+        def on_err(msg):
+            # 오류는 알림만 (진행은 계속)
+            messagebox.showerror("오류", str(msg))
 
         self.controller.start_batch(settings, self.posts, on_prog, on_done, on_err)
 
