@@ -35,6 +35,37 @@ class AppController:
         self._max_preview_side = 1400
 
     # ---------- 내부 유틸 ----------
+    # def _filename_for(self, src: Path, w: int, h: int) -> str:
+    #     """
+    #     크기 지정 시 파일명에 _{WxH} 태그를 붙여 다중 크기 저장 시 충돌 방지.
+    #     원본 크기(0,0)일 땐 태그 생략.
+    #     """
+    #     size_tag = "" if (w, h) == (0, 0) else f"_{w}x{h}"
+    #     return f"{src.stem}{size_tag}_wm.jpg"
+
+    def _filename_for(self, src: Path, w: int, h: int) -> str:
+        size_tag = "" if (w, h) == (0, 0) else f"_{w}x{h}"
+        ext = src.suffix.lower()
+        if ext not in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"):
+            ext = ".jpg"  # 알 수 없는 포맷은 jpg로
+        return f"{src.stem}{size_tag}_wm{ext}"
+
+    def _unique_path(self, out_dir: Path, filename: str) -> Path:
+        """
+        같은 이름이 있으면 _1, _2 … 를 붙여 고유 경로를 만든다.
+        """
+        dst = out_dir / filename
+        if not dst.exists():
+            return dst
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        i = 1
+        while True:
+            cand = out_dir / f"{stem}_{i}{suffix}"
+            if not cand.exists():
+                return cand
+            i += 1
+
     def _resolve_wm_text(self, rc: RootConfig, settings: AppSettings) -> str:
         if getattr(rc, "wm_text", None) is not None and str(rc.wm_text).strip() == "":
             return ""
