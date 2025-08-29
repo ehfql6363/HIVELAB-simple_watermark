@@ -49,6 +49,7 @@ class ThumbGallery(ttk.Frame):
         self.cols = int(cols)
         self.fixed_height = int(height)
 
+        self._img_labels: Dict[Path, tk.Label] = {}
         self._sel_bars: Dict[Path, tk.Frame] = {}
         self._last_row_index: Optional[int] = None
 
@@ -83,6 +84,7 @@ class ThumbGallery(ttk.Frame):
         self._imgs.clear()
         self._order.clear()
         self._active = None
+        self._img_labels.clear()
         self._sel_bars.clear()
         self._update_scroll()
 
@@ -121,6 +123,7 @@ class ThumbGallery(ttk.Frame):
             lbl_img = tk.Label(body, image=tkim, takefocus=0)
             lbl_img.image = tkim
             self._imgs[p] = tkim
+            self._img_labels[p] = lbl_img
             lbl_img.pack(padx=4, pady=(4, 0))
 
             # 파일명
@@ -239,14 +242,22 @@ class ThumbGallery(ttk.Frame):
     def update_anchor_overlay(self, default_anchor, img_anchor_map, style_override_set=None):
         self._default_anchor = tuple(default_anchor)
         self._img_anchor_map = dict(img_anchor_map or {})
-        self._style_override_set = set(style_override_set or set())  # ★ 추가 보관
-        for p, tile in self._tiles.items():
+        self._style_override_set = set(style_override_set or set())
+
+        for p in list(self._tiles.keys()):
             if p in self._imgs:
                 self._imgs[p] = self._make_thumb_with_overlay(p, self.thumb_size)
-                for w in tile.winfo_children():
-                    if isinstance(w, tk.Label) and getattr(w, "image", None) is not None:
-                        w.configure(image=self._imgs[p]); w.image = self._imgs[p]
-                        break
+                lbl = self._img_labels.get(p)
+                if lbl is not None:
+                    lbl.configure(image=self._imgs[p])
+                    lbl.image = self._imgs[p]
+
+        try:
+            # 갱신 즉시 화면에 반영 보장
+            self.update_idletasks()
+            self.canvas.update_idletasks()
+        except Exception:
+            pass
 
     # ---------- render ----------
 
