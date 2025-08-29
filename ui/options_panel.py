@@ -110,7 +110,7 @@ class OptionsPanel(ttk.Frame):
         self.sw_bg = _make_swatch(wm, self.var_bg.get()); self.sw_bg.grid(row=0, column=6, sticky="w", padx=4)
         ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_bg, self.sw_bg)).grid(row=0, column=7, sticky="w")
 
-        ttk.Label(wm, text="전경색").grid(row=1, column=0, sticky="e", pady=(4, 2))
+        ttk.Label(wm, text="글자색").grid(row=1, column=0, sticky="e", pady=(4, 2))
         self.var_fill = tk.StringVar(value="#000000")
         self.ent_fill = ttk.Entry(wm, textvariable=self.var_fill, width=9)
         self.ent_fill.grid(row=1, column=1, sticky="w", pady=(4, 2))
