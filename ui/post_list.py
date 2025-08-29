@@ -98,6 +98,7 @@ class PostList(ttk.Frame):
             root_disp = "이미지" if root_key == IMAGES_VROOT else Path(root_key).name
             rid = self.tree.insert("", "end", text="📂 " + root_disp, values=("",), open=False)
             self._root_nodes[root_key] = rid
+            self._iid_to_item[rid] = ("root", root_key)
 
             posts_in_root = sorted(groups[root_key], key=lambda kv: kv[0].lower())
             for pi, (post_key, meta) in enumerate(posts_in_root):
@@ -184,13 +185,19 @@ class PostList(ttk.Frame):
         item = self._get_item(iid)
         if not item:
             return None
+
         typ, key = item
         if typ == "post":
             return key  # str
+        elif typ == "image":
+            post_key, _path = key  # (post_key, Path)
+            return post_key
+        elif typ == "root":
+            # 루트를 선택한 상태에서는 특정 게시물을 반환하지 않음
+            # (원하면 이 자리에서 첫 게시물을 골라 반환하는 로직을 넣을 수도 있음)
+            return None
         else:
-            # 이미지 선택 시에도 "소속 게시물 key" 반환
-            k, _ = key  # (post_key, path)
-            return k
+            return None
 
     def clear(self):
         self.tree.delete(*self.tree.get_children())
@@ -215,47 +222,83 @@ class PostList(ttk.Frame):
 
     # ---------- 이벤트 ----------
 
+    def _get_root_iid(self, iid: str) -> str:
+        """iid가 속한 최상위(루트) iid 반환."""
+        cur = iid
+        while True:
+            parent = self.tree.parent(cur)
+            if not parent:
+                return cur
+            cur = parent
+
+    def _collapse_other_roots(self, keep_root_iid: Optional[str]):
+        """keep_root_iid만 열어두고 다른 루트들은 닫기."""
+        for top_iid in self.tree.get_children(""):
+            if top_iid != keep_root_iid:
+                try:
+                    self.tree.item(top_iid, open=False)
+                except Exception:
+                    pass
+
+    def _collapse_other_posts(self, keep_iid: Optional[str]):
+        """keep_iid(유지할 게시물 iid)만 열어두고 나머지 게시물은 닫는다."""
+        for iid, (typ, _item) in self._iid_to_item.items():
+            if typ == "post" and iid != keep_iid:
+                try:
+                    self.tree.item(iid, open=False)
+                except Exception:
+                    pass
+
     def _on_select(self, _):
         sel = self.tree.selection()
         if not sel:
             return
         iid = sel[0]
-
         item = self._get_item(iid)
-
-        # 1) 루트가 클릭된 경우: 펼치고 첫 자식(게시물/이미지)으로 포커스 넘김
-        if item is None:
-            try:
-                # 루트 펼치기
-                self.tree.item(iid, open=True)
-                children = self.tree.get_children(iid)
-                if children:
-                    # 첫 자식 선택 → 여기서 <<TreeviewSelect>> 다시 발생
-                    self.tree.selection_set(children[0])
-                    self.tree.see(children[0])
-                    self.event_generate("<<TreeviewSelect>>")
-                return
-            except Exception:
-                pass
+        if not item:
             return
 
         typ, key = item
 
-        # 2) 게시물 클릭: 자기 자신 펼치고, 부모 루트도 열기
+        # 루트만 열어두고 나머지 루트 닫기
+        root_iid = self._get_root_iid(iid)
+        try:
+            self.tree.item(root_iid, open=True)
+        except Exception:
+            pass
+        self._collapse_other_roots(root_iid)
+
         if typ == "post":
+            post_iid = iid
             try:
-                parent = self.tree.parent(iid)
-                if parent:
-                    self.tree.item(parent, open=True)
-                self.tree.item(iid, open=True)
+                self.tree.item(post_iid, open=True)
             except Exception:
                 pass
+            self._collapse_other_posts(post_iid)
 
-        # (A) 부모 쪽 콜백 유지: post 선택(또는 이미지 선택) → 해당 게시물 key 알림
-        if self.on_select:
+        elif typ == "image":
+            post_iid = self.tree.parent(iid)
+            if post_iid:
+                try:
+                    self.tree.item(post_iid, open=True)
+                except Exception:
+                    pass
+                self._collapse_other_posts(post_iid)
+
+        elif typ == "root":
+            # 루트 클릭 시 → 첫 번째 자식(post)이 있으면 자동 선택
+            children = self.tree.get_children(iid)
+            if children:
+                first_child = children[0]
+                self.tree.selection_set(first_child)
+                self.tree.see(first_child)
+                self.event_generate("<<TreeviewSelect>>")
+                return  # 여기서 빠져나가면 post/image 분기로 안 들어감
+
+        # ▼ 루트 제외하고 콜백 호출
+        if typ != "root" and self.on_select:
             self.on_select(self.get_selected_post())
 
-        # (B) 이미지 행이면 별도 콜백
         if typ == "image" and self.on_image_select:
             post_key, path = key
             self.on_image_select(post_key, path)
