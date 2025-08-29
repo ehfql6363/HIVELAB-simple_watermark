@@ -148,9 +148,21 @@ class AppController:
             return (int(round(w * (m / h))), int(m))
 
     # ---------- 설정 병합 ----------
+    # controller.py
+
     def resolve_wm_config(self, meta: dict, settings: AppSettings, src: Optional[Path]) -> Optional[dict]:
+        """
+        최종 워터마크 설정 병합 (배치/미리보기 공용):
+        우선순위 (text 기준)
+          1) 이미지 개별 오버라이드 img_overrides[src]["text"] (있으면 최우선)
+          2) 이미지 인라인 편집 meta["img_wm_text_edits"][src]
+          3) 게시물 인라인 편집 meta["wm_text_edit"]
+          4) 루트/앱 기본(self._resolve_wm_text)
+        text == "" 이면 '워터마크 없음' → None 반환
+        나머지 키들(fill/stroke/…​)은 img_overrides가 있으면 해당 키만 덮어씀
+        """
+        # ---- 1) 기본값(현재 UI/설정) 준비
         base = {
-            "text": self.resolve_wm_for_meta(meta, settings),
             "opacity": settings.wm_opacity,
             "scale_pct": settings.wm_scale_pct,
             "fill": settings.wm_fill_color,
@@ -158,13 +170,38 @@ class AppController:
             "stroke_w": settings.wm_stroke_width,
             "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
         }
-        ov = {}
-        if src is not None:
-            img_ov_map = meta.get("img_overrides") or {}
-            ov = img_ov_map.get(src) or {}
-        cfg = {**base, **ov}
-        if (cfg.get("text") or "").strip() == "":
+
+        # ---- 2) 텍스트 우선순위
+        final_text: Optional[str] = None
+
+        # 1) 이미지 오버라이드 우선 (text가 명시되어 있으면 그 값을 그대로 사용)
+        ov_all = meta.get("img_overrides") or {}
+        ov_for_img = ov_all.get(src) or {} if src is not None else {}
+        if "text" in ov_for_img:
+            final_text = (ov_for_img.get("text") or "").strip()
+
+        # 2) 이미지 인라인 편집
+        if final_text is None and src is not None:
+            img_edits = meta.get("img_wm_text_edits") or {}
+            if src in img_edits:
+                final_text = (img_edits[src] or "").strip()
+
+        # 3) 게시물 인라인 편집
+        if final_text is None and ("wm_text_edit" in meta):
+            final_text = (meta.get("wm_text_edit") or "").strip()
+
+        # 4) 루트/앱 기본
+        if final_text is None:
+            rc: RootConfig = meta["root"]
+            final_text = self._resolve_wm_text(rc, settings).strip()
+
+        # 빈문자면 '없음'
+        if final_text == "":
             return None
+
+        # ---- 3) 나머지 키 병합 (개별 오버라이드에 있는 키만 덮어쓰기)
+        cfg = {**base, **{k: v for k, v in ov_for_img.items() if k != "text"}}
+        cfg["text"] = final_text
         return cfg
 
     # ---------- 스캔 ----------
