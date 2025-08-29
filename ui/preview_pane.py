@@ -345,6 +345,17 @@ class PreviewPane(ttk.Frame):
     def show(self, before_img: Image.Image, after_img: Image.Image):
         self._pil_before = before_img
         self._pil_after = after_img
+
+        # 캡션에 해상도 넣어 혼동 방지
+        try:
+            bw, bh = before_img.size
+            aw, ah = after_img.size
+            self.lbl_before_cap.configure(text=f"원본  ({bw}×{bh})")
+            self.lbl_after_cap.configure(text=f"적용  ({aw}×{ah})")
+        except Exception:
+            self.lbl_before_cap.configure(text="원본")
+            self.lbl_after_cap.configure(text="적용")
+
         left, right = (self._pil_after, self._pil_before) if self._swapped else (self._pil_before, self._pil_after)
         self.canvas_before.set_image(left)
         self.canvas_after.set_image(right)

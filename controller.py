@@ -241,61 +241,40 @@ class AppController:
         return posts
 
     # ---------- 미리보기 ----------
-    def preview_by_key(self, key: str, posts: Dict[str, dict], settings: AppSettings, selected_src: Optional[Path] = None) -> tuple[Image.Image, Image.Image]:
+    def preview_by_key(self, key: str, posts: Dict[str, dict], settings: AppSettings,
+                       selected_src: Optional[Path] = None) -> tuple[Image.Image, Image.Image]:
         meta = posts.get(key)
         if not meta or not meta["files"]:
             raise ValueError("No images in this post.")
         src = selected_src or meta["files"][0]
 
-        # ✅ 타겟 계산: '원본 그대로(0,0)'이면 화면용 축소 목표 사용
+        # ✅ 원본은 항상 '그대로' (EXIF 회전/색공간 변환된 RGB) + 방어적 copy()
+        before = load_image(src).copy()
+
         tgt = settings.sizes[0]
+        # 적용쪽만 타겟 캔버스로
         if tuple(tgt) == (0, 0):
-            # 원본 크기 확인 후 화면용 목표 산출
-            base = load_image(src)
-            tgt = self._suggest_preview_target(base.size)
-
-        # ✅ 캐시 키
-        anchor = self._choose_anchor(meta, settings, src)
-        wm_cfg = self.resolve_wm_config(meta, settings, src)
-        pkey = (
-            str(src),
-            src.stat().st_mtime_ns if src.exists() else 0,
-            int(tgt[0]), int(tgt[1]),
-            tuple(settings.bg_color),
-            tuple(anchor),
-            self._cfg_key(wm_cfg),
-        )
-
-        with self._preview_lock:
-            if pkey in self._preview_cache:
-                val = self._preview_cache.pop(pkey)
-                self._preview_cache[pkey] = val
-                return val
-
-        # ✅ 프리뷰는 빠른 리사이즈 경로 사용(fast=True)
-        before_canvas = self._get_resized_canvas(src, tgt, settings.bg_color, fast=True).copy()
-
-        if not wm_cfg:
-            after_canvas = before_canvas.copy()
+            canvas = before.copy()
         else:
-            after_canvas = add_text_watermark(
-                before_canvas.copy(),
-                text=wm_cfg["text"],
-                opacity_pct=int(wm_cfg["opacity"]),
-                scale_pct=int(wm_cfg["scale_pct"]),
-                fill_rgb=tuple(wm_cfg["fill"]),
-                stroke_rgb=tuple(wm_cfg["stroke"]),
-                stroke_width=int(wm_cfg["stroke_w"]),
-                anchor_norm=anchor,
-                font_path=Path(wm_cfg["font_path"]) if wm_cfg.get("font_path") else None,
-            )
+            canvas = self._get_resized_canvas(src, tgt, settings.bg_color).copy()
 
-        with self._preview_lock:
-            self._preview_cache[pkey] = (before_canvas, after_canvas)
-            if len(self._preview_cache) > self._preview_cache_limit:
-                self._preview_cache.popitem(last=False)
+        wm_cfg = self.resolve_wm_config(meta, settings, src)
+        if not wm_cfg:
+            return before, canvas  # 워터마크 없음
 
-        return before_canvas, after_canvas
+        anchor = self._choose_anchor(meta, settings, src)
+        after = add_text_watermark(
+            canvas,
+            text=wm_cfg["text"],
+            opacity_pct=int(wm_cfg["opacity"]),
+            scale_pct=int(wm_cfg["scale_pct"]),
+            fill_rgb=tuple(wm_cfg["fill"]),
+            stroke_rgb=tuple(wm_cfg["stroke"]),
+            stroke_width=int(wm_cfg["stroke_w"]),
+            anchor_norm=anchor,
+            font_path=Path(wm_cfg["font_path"]) if wm_cfg.get("font_path") else None,
+        )
+        return before, after
 
     # ---------- 출력 경로 ----------
     def _output_dir_for(self, src: Path, rc: RootConfig, out_root: Path, post_name: str) -> Path:
