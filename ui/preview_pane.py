@@ -35,7 +35,8 @@ def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2
         mid = (low + high) // 2
         w, _ = _measure_text(_pick_font(mid, font_path), text, stroke_width=stroke_width)
         if w <= target_w:
-            best = mid; low = mid + 1
+            best = mid
+            low = mid + 1
         else:
             high = mid - 1
     return best
@@ -75,7 +76,8 @@ class _CheckerCanvas(tk.Canvas):
 
     def set_grid_visible(self, visible: bool):
         self._grid_visible = visible
-        self._draw_grid_overlay(); self._draw_cell_highlight()
+        self._draw_grid_overlay()
+        self._draw_cell_highlight()
         if visible:
             self._clear_wmghost()
 
@@ -95,8 +97,10 @@ class _CheckerCanvas(tk.Canvas):
     def event_to_norm(self, ex: int, ey: int) -> Optional[Tuple[float,float]]:
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
         if iw <= 1 or ih <= 1: return None
-        x = min(max(ex, x0), x0 + iw); y = min(max(ey, y0), y0 + ih)
-        nx = (x - x0) / iw; ny = (y - y0) / ih
+        x = min(max(ex, x0), x0 + iw)
+        y = min(max(ey, y0), y0 + ih)
+        nx = (x - x0) / iw
+        ny = (y - y0) / ih
         return (min(1.0, max(0.0, nx)), min(1.0, max(0.0, ny)))
 
     # ------- 렌더 큐 -------
@@ -124,16 +128,19 @@ class _CheckerCanvas(tk.Canvas):
     # ------- 내부 렌더 -------
     def _render_full(self):
         self._pending = False
-        w = max(1, self.winfo_width()); h = max(1, self.winfo_height())
+        w = max(1, self.winfo_width())
+        h = max(1, self.winfo_height())
         if w < 4 or h < 4:
-            self.after(16, self._render_full); return
+            self.after(16, self._render_full)
+            return
 
         self.delete("checker")
         self.create_rectangle(0, 0, w, h, fill="#E9E9E9", outline="", width=0, tags="checker")
         self.tag_lower("checker")
 
         if self._pil_img is None:
-            self.delete("content"); self._img_id = None
+            self.delete("content")
+            self._img_id = None
             self._last.update({"w":w,"h":h,"x0":0,"y0":0,"iw":1,"ih":1})
             self._clear_overlay()
             return
@@ -169,11 +176,14 @@ class _CheckerCanvas(tk.Canvas):
                 self.itemconfigure(self._img_id, image=tkimg)
                 self.coords(self._img_id, x0, y0)
 
-        self.tag_lower("checker"); self.tag_raise("content")
+        self.tag_lower("checker")
+        self.tag_raise("content")
         self._last.update({"w": w, "h": h, "x0": x0, "y0": y0, "iw": iw, "ih": ih, "src_id": cur_src_id})
 
         self._ensure_wm_sprite()
-        self._draw_grid_overlay(); self._draw_cell_highlight(); self._draw_wmghost()
+        self._draw_grid_overlay()
+        self._draw_cell_highlight()
+        self._draw_wmghost()
 
     def _clear_overlay(self):
         for tag in ("grid", "cellsel", "wmghost"):
@@ -197,26 +207,36 @@ class _CheckerCanvas(tk.Canvas):
         self.tag_raise("grid")
 
     def _draw_cell_highlight(self):
-        self.delete("cellsel"); self._cell_sel_id = None
+        self.delete("cellsel")
+        self._cell_sel_id = None
         if self._grid_sel is None or not self._grid_visible: return
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
         if iw <= 1 or ih <= 1: return
         ix, iy = self._grid_sel
-        ix = min(2, max(0, int(ix))); iy = min(2, max(0, int(iy)))
-        cw = iw / 3.0; ch = ih / 3.0
-        rx0 = int(x0 + ix * cw); ry0 = int(y0 + iy * ch)
-        rx1 = int(x0 + (ix + 1) * cw); ry1 = int(y0 + (iy + 1) * ch)
+        ix = min(2, max(0, int(ix)))
+        iy = min(2, max(0, int(iy)))
+        cw = iw / 3.0
+        ch = ih / 3.0
+        rx0 = int(x0 + ix * cw)
+        ry0 = int(y0 + iy * ch)
+        rx1 = int(x0 + (ix + 1) * cw)
+        ry1 = int(y0 + (iy + 1) * ch)
         self.create_rectangle(rx0, ry0, rx1, ry1, fill="#38f448", outline="#38f448", width=1, tags="cellsel", stipple="gray25")
-        self.tag_raise("cellsel"); self.tag_raise("grid")
+        self.tag_raise("cellsel")
+        self.tag_raise("grid")
 
     def _ensure_wm_sprite(self):
         if not self._wm_cfg:
-            self._wm_sprite_key = None; self._wm_sprite_tk = None
-            self._clear_wmghost(); return
+            self._wm_sprite_key = None
+            self._wm_sprite_tk = None
+            self._clear_wmghost()
+            return
         txt = (self._wm_cfg.get("text") or "").strip()
         if txt == "":
-            self._wm_sprite_key = None; self._wm_sprite_tk = None
-            self._clear_wmghost(); return
+            self._wm_sprite_key = None
+            self._wm_sprite_tk = None
+            self._clear_wmghost()
+            return
 
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
         if iw <= 1 or ih <= 1: return
@@ -261,12 +281,16 @@ class _CheckerCanvas(tk.Canvas):
 
     def _draw_wmghost(self):
         if self._grid_visible or not self._wm_sprite_tk or self._marker_norm is None:
-            self._clear_wmghost(); return
+            self._clear_wmghost()
+            return
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
-        if iw <= 1 or ih <= 1: self._clear_wmghost(); return
+        if iw <= 1 or ih <= 1:
+            self._clear_wmghost()
+            return
         nx = min(1.0, max(0.0, float(self._marker_norm[0])))
         ny = min(1.0, max(0.0, float(self._marker_norm[1])))
-        cx = x0 + nx * iw; cy = y0 + ny * ih
+        cx = x0 + nx * iw
+        cy = y0 + ny * ih
         if self._wmghost_id is None:
             self._wmghost_id = self.create_image(cx, cy, image=self._wm_sprite_tk, anchor="center", tags="wmghost")
         else:
@@ -288,21 +312,23 @@ class PreviewPane(ttk.Frame):
         self._on_anchor_change = on_anchor_change
         self._on_clear_individual = on_clear_individual
         self._on_apply_all = on_apply_all
-        self._placement_mode = tk.StringVar(value="grid")
+        self._placement_mode = tk.StringVar(value="drag")
 
-        top = ttk.Frame(self); top.pack(fill="x", pady=(2, 0))
-        self.lbl_before_cap = ttk.Label(top, text="원본", font=("", 10, "bold"))
-        self.lbl_after_cap = ttk.Label(top, text="적용", font=("", 10, "bold"))
-        self.btn_swap = ttk.Button(top, text="좌우 교체 ◀▶", command=self._on_swap)
-        self.lbl_before_cap.pack(side="left", padx=4)
+        top = ttk.Frame(self)
+        top.pack(fill="x", pady=(2, 0))
+        self.lbl_left_cap = ttk.Label(top, text="적용", font=("", 10, "bold"))
+        self.lbl_right_cap = ttk.Label(top, text="원본", font=("", 10, "bold"))
+        self.btn_swap = ttk.Button(top, text="← 좌우 교체 →", command=self._on_swap)
+        self.lbl_left_cap.pack(side="left", padx=4)
         self.btn_swap.pack(side="left", padx=8)
-        self.lbl_after_cap.pack(side="left", padx=4)
+        self.lbl_right_cap.pack(side="left", padx=4)
 
         ttk.Label(top, text="배치:").pack(side="left", padx=(16,2))
-        ttk.Radiobutton(top, text="3×3 그리드", variable=self._placement_mode,
-                        value="grid", command=self._on_mode_change).pack(side="left")
         ttk.Radiobutton(top, text="드래그", variable=self._placement_mode,
-                        value="drag", command=self._on_mode_change).pack(side="left", padx=(4,0))
+                        value="drag", command=self._on_mode_change).pack(side="left")
+        ttk.Radiobutton(top, text="3×3 그리드", variable=self._placement_mode,
+                        value="grid", command=self._on_mode_change).pack(side="left", padx=(4, 0))
+
 
         ttk.Button(top, text="모든 이미지에 적용",
                    command=lambda: on_apply_all and on_apply_all(self._anchor_norm)
@@ -311,7 +337,8 @@ class PreviewPane(ttk.Frame):
                    command=lambda: self._on_clear_individual and self._on_clear_individual()
                    ).pack(side="left")
 
-        container = ttk.Frame(self); container.pack(fill="both", expand=True, pady=4)
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True, pady=4)
         self.box_before = tk.Frame(container, bd=1, relief="solid")
         self.box_after  = tk.Frame(container, bd=2, relief="solid")
         self.box_before.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
@@ -322,11 +349,13 @@ class PreviewPane(ttk.Frame):
         self.canvas_before.pack(fill="both", expand=True)
         self.canvas_after.pack(fill="both", expand=True)
 
-        container.columnconfigure(0, weight=1); container.columnconfigure(1, weight=1); container.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
+        container.columnconfigure(1, weight=1)
+        container.rowconfigure(0, weight=1)
 
         self._pil_before: Image.Image | None = None
         self._pil_after: Image.Image | None = None
-        self._swapped = False
+        self._swapped = True
         self._anchor_norm: Tuple[float,float] = (0.5, 0.5)
         self._dragging = False
 
@@ -338,6 +367,14 @@ class PreviewPane(ttk.Frame):
         self._apply_grid_and_visuals()
 
     # ------- 외부 API -------
+    def _apply_canvas(self) -> "_CheckerCanvas":
+        # 적용(After)을 보여주는 캔버스
+        return self.canvas_before if self._swapped else self.canvas_after
+
+    def _original_canvas(self) -> "_CheckerCanvas":
+        # 원본(Before)을 보여주는 캔버스
+        return self.canvas_after if self._swapped else self.canvas_before
+
     def set_wm_preview_config(self, cfg: Optional[Dict]):
         self.canvas_before.set_wm_config(cfg)
         self.canvas_after.set_wm_config(cfg)
@@ -346,98 +383,126 @@ class PreviewPane(ttk.Frame):
         self._pil_before = before_img
         self._pil_after = after_img
 
-        # 캡션에 해상도 넣어 혼동 방지
+        # 해상도
         try:
             bw, bh = before_img.size
             aw, ah = after_img.size
-            self.lbl_before_cap.configure(text=f"원본  ({bw}×{bh})")
-            self.lbl_after_cap.configure(text=f"적용  ({aw}×{ah})")
+            if self._swapped:
+                # 왼쪽=적용(After), 오른쪽=원본(Before)
+                self.lbl_left_cap.configure(text=f"적용  ({aw}×{ah})")
+                self.lbl_right_cap.configure(text=f"원본  ({bw}×{bh})")
+            else:
+                # 왼쪽=원본(Before), 오른쪽=적용(After)
+                self.lbl_left_cap.configure(text=f"원본  ({bw}×{bh})")
+                self.lbl_right_cap.configure(text=f"적용  ({aw}×{ah})")
         except Exception:
-            self.lbl_before_cap.configure(text="원본")
-            self.lbl_after_cap.configure(text="적용")
+            # 안전 폴백
+            if self._swapped:
+                self.lbl_left_cap.configure(text="적용")
+                self.lbl_right_cap.configure(text="원본")
+            else:
+                self.lbl_left_cap.configure(text="원본")
+                self.lbl_right_cap.configure(text="적용")
 
-        left, right = (self._pil_after, self._pil_before) if self._swapped else (self._pil_before, self._pil_after)
+        # 실제 좌우 표시될 이미지도 스왑 상태에 맞춰 배치
+        left, right = (
+            (self._pil_after, self._pil_before) if self._swapped
+            else (self._pil_before, self._pil_after)
+        )
         self.canvas_before.set_image(left)
         self.canvas_after.set_image(right)
         self._refresh_visuals()
 
     def clear(self):
-        self._pil_before = None; self._pil_after = None; self._swapped = False; self._dragging = False
-        self.canvas_before.set_image(None); self.canvas_after.set_image(None)
-        self.canvas_before.select_grid_cell(None); self.canvas_after.select_grid_cell(None)
-        self.canvas_before.set_marker_norm(None); self.canvas_after.set_marker_norm(None)
-        self.lbl_before_cap.configure(text="원본"); self.lbl_after_cap.configure(text="적용")
+        self._pil_before = None
+        self._pil_after = None
+        self._swapped = True
+        self._dragging = False
+        self.canvas_before.set_image(None)
+        self.canvas_after.set_image(None)
+        self.canvas_before.select_grid_cell(None)
+        self.canvas_after.select_grid_cell(None)
+        self.canvas_before.set_marker_norm(None)
+        self.canvas_after.set_marker_norm(None)
+        self.lbl_left_cap.configure(text="적용")
+        self.lbl_right_cap.configure(text="원본")
 
     def set_anchor(self, norm: Tuple[float,float]):
         self._anchor_norm = (float(norm[0]), float(norm[1]))
         self._refresh_visuals()
 
-    # ------- 내부 동작 -------
-    def _get_active_canvas(self) -> _CheckerCanvas:
-        return self.canvas_before if self._swapped else self.canvas_after
-
     def _refresh_visuals(self):
-        act = self._get_active_canvas()
-        oth = self.canvas_after if act is self.canvas_before else self.canvas_before
+        # 적용/원본 역할 고정
+        apply_cv = self._apply_canvas()
+        orig_cv = self._original_canvas()
 
-        if self._placement_mode.get() == "grid":
+        if self._placement_mode.get() == "drag":
+            # ✅ 드래그 모드: 적용쪽만 마커, 원본쪽은 오버레이 제거
+            apply_cv.select_grid_cell(None)
+            apply_cv.set_marker_norm(self._anchor_norm)
+
+            orig_cv.select_grid_cell(None)
+            orig_cv.set_marker_norm(None)
+
+        else:  # "grid"
+            # ✅ 그리드 모드: 원본쪽만 그리드, 적용쪽은 오버레이 제거
+            # 현재 앵커를 3x3 셀로 표시
             ix = min(2, max(0, int(self._anchor_norm[0] * 3)))
             iy = min(2, max(0, int(self._anchor_norm[1] * 3)))
-            act.select_grid_cell((ix, iy))
-            act.set_marker_norm(None)
-            oth.select_grid_cell(None); oth.set_marker_norm(None)
-        else:
-            act.select_grid_cell(None)
-            act.set_marker_norm(self._anchor_norm)
-            oth.select_grid_cell(None); oth.set_marker_norm(None)
+            orig_cv.select_grid_cell((ix, iy))
+            orig_cv.set_marker_norm(None)
+
+            apply_cv.select_grid_cell(None)
+            apply_cv.set_marker_norm(None)
 
         self._apply_grid_and_visuals()
 
     def _apply_grid_and_visuals(self):
+        # ✅ 그리드 보이기: 원본쪽 only (그리드 모드일 때)
         show_grid = (self._placement_mode.get() == "grid")
-        self._get_active_canvas().set_grid_visible(show_grid)
-        (self.canvas_after if self._get_active_canvas() is self.canvas_before else self.canvas_before).set_grid_visible(False)
+        self._original_canvas().set_grid_visible(show_grid)
+        self._apply_canvas().set_grid_visible(False)  # 적용쪽은 항상 드래그용, 그리드는 사용 안 함
 
     def _on_swap(self):
         self._swapped = not self._swapped
-        if self._swapped:
-            self.lbl_before_cap.configure(text="적용 (좌우 교체)")
-            self.lbl_after_cap.configure(text="원본 (좌우 교체)")
-        else:
-            self.lbl_before_cap.configure(text="원본")
-            self.lbl_after_cap.configure(text="적용")
         if self._pil_before and self._pil_after:
             self.show(self._pil_before, self._pil_after)
+        self._refresh_visuals()
 
     def _on_mode_change(self):
         self._refresh_visuals()
 
     def _on_click(self, e):
-        if e.widget is not self._get_active_canvas():
-            return
         if self._placement_mode.get() == "grid":
-            cv = self._get_active_canvas()
+            # ✅ 원본쪽 클릭만 처리
+            if e.widget is not self._original_canvas():
+                return
+            cv = self._original_canvas()
             norm = cv.event_to_norm(e.x, e.y)
             if not norm: return
             nx, ny = norm
             ix = min(2, max(0, int(nx * 3)))
             iy = min(2, max(0, int(ny * 3)))
-            cx = (ix + 0.5) / 3.0; cy = (iy + 0.5) / 3.0
+            cx = (ix + 0.5) / 3.0
+            cy = (iy + 0.5) / 3.0
             self._anchor_norm = (cx, cy)
             cv.select_grid_cell((ix, iy))
             cv.set_marker_norm(None)
             if self._on_anchor_change:
                 self._on_anchor_change(self._anchor_norm)
         else:
+            # ✅ 드래그 모드: 적용쪽에서만 드래그 시작
+            if e.widget is not self._apply_canvas():
+                return
             self._dragging = True
             self._on_drag(e)
 
     def _on_drag(self, e):
-        if not self._dragging and self._placement_mode.get() != "drag":
+        if self._placement_mode.get() != "drag" or not self._dragging:
             return
-        if e.widget is not self._get_active_canvas():
+        if e.widget is not self._apply_canvas():
             return
-        cv = self._get_active_canvas()
+        cv = self._apply_canvas()
         norm = cv.event_to_norm(e.x, e.y)
         if not norm: return
         self._anchor_norm = norm
@@ -448,5 +513,7 @@ class PreviewPane(ttk.Frame):
             self._dragging = False
             if self._on_anchor_change:
                 self._on_anchor_change(self._anchor_norm)
+            # 유령 마커는 드래그 끝나면 숨김
             self.canvas_before.set_marker_norm(None)
             self.canvas_after.set_marker_norm(None)
+
