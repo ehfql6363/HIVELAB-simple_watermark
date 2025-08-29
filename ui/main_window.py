@@ -146,18 +146,16 @@ class MainWindow(BaseTk):
         self.bind_all("<F6>", lambda e: self._open_output_folder())
 
     def _build_middle(self, parent):
-        # 가로 분할: 좌(게시물+에디터) / 우(프리뷰+썸네일)
+        # 전체 가로 분할: 좌(게시물), 우(에디터+프리뷰+썸네일)
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         mid.pack(fill="both", expand=True, padx=8, pady=(8, 8))
 
-        # 좌: 세로 분할(게시물, 에디터)
-        left = ttk.PanedWindow(mid, orient=tk.VERTICAL)
-        mid.add(left, weight=1)
+        # ── 왼쪽: 게시물(트리)만 ───────────────────────────────────────────
+        left_frame = ttk.Frame(mid)
+        mid.add(left_frame, weight=3)  # 왼쪽 비중 높게(스크롤 여유)
 
-        # ── 게시물(트리) ──
-        post_frame = ttk.Frame(left)
         self.post_list = PostList(
-            post_frame,
+            left_frame,
             on_select=self.on_select_post,
             resolve_wm=self._resolve_wm_text_for_list,
             resolve_img_wm=self._resolve_img_wm_text_for_list,
@@ -166,23 +164,22 @@ class MainWindow(BaseTk):
             on_image_select=self._on_postlist_image_select,
         )
         self.post_list.pack(fill="both", expand=True)
-        left.add(post_frame, weight=3)
 
-        # ── 개별 이미지 워터마크 에디터(분리) ──
-        editor_frame = ttk.Frame(left)
+        # ── 오른쪽: 세로 분할(에디터 → 프리뷰 → 썸네일) ─────────────────────
+        right = ttk.PanedWindow(mid, orient=tk.VERTICAL)
+        mid.add(right, weight=5)
+
+        # (1) 개별 이미지 워터마크 에디터 - 맨 위로 이동
+        editor_frame = ttk.Frame(right)
         self.wm_editor = ImageWMEditor(
             editor_frame,
             on_apply=self._on_image_wm_override,
             on_clear=self._on_image_wm_clear
         )
-        self.wm_editor.pack(fill="x", expand=False, pady=(6, 0))
-        left.add(editor_frame, weight=2)
+        self.wm_editor.pack(fill="x", expand=False, pady=(0, 4))
+        right.add(editor_frame, weight=0)  # 고정 높이에 가깝게
 
-        # 우: 세로 분할(프리뷰, 썸네일)
-        right = ttk.PanedWindow(mid, orient=tk.VERTICAL)
-        mid.add(right, weight=4)
-
-        # PreviewPane
+        # (2) 미리보기(가운데, 가장 큰 비중)
         pre_frame = ttk.Frame(right)
         self.preview = PreviewPane(
             pre_frame,
@@ -191,20 +188,19 @@ class MainWindow(BaseTk):
             on_clear_individual=self._on_clear_individual
         )
         self.preview.pack(fill="both", expand=True)
-        right.add(pre_frame)  # weight만 사용
+        right.add(pre_frame, weight=6)  # 가장 크게
 
-        # ThumbGallery
+        # (3) 썸네일(하단, 낮은 비중)
         gal_frame = ttk.Frame(right)
-        # pack_propagate(False) 사용 금지(0px로 눌릴 수 있음)
         self.gallery = ThumbGallery(
             gal_frame,
             on_activate=self._on_activate_image,
-            thumb_size=168, cols=6, height=200  # 방법 C: 내부 높이 힌트
+            thumb_size=168, cols=6, height=200
         )
         self.gallery.pack(fill="x", expand=False)
-        right.add(gal_frame)
+        right.add(gal_frame, weight=1)
 
-        # 오른쪽 PanedWindow에 ‘사이즈 최소치’ 강제 (minsize 대용)
+        # 프리뷰/썸네일 최소 높이 강제(부드럽게)
         MIN_PREVIEW, MIN_GALLERY = 360, 180
         self._right_sash_job = None
 
@@ -225,8 +221,10 @@ class MainWindow(BaseTk):
 
         def _debounced_enforce(_=None):
             if self._right_sash_job:
-                try: self.after_cancel(self._right_sash_job)
-                except Exception: pass
+                try:
+                    self.after_cancel(self._right_sash_job)
+                except Exception:
+                    pass
             self._right_sash_job = self.after(60, _apply_right_sash)
 
         right.bind("<Configure>", _debounced_enforce)

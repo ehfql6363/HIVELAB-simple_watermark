@@ -90,8 +90,12 @@ class OptionsPanel(ttk.Frame):
         self.var_custom_h.trace_add("write", lambda *_: self._notify_change())
 
         # ── 워터마크/배경 ──────────────────────────────────────────────────────
-        wm = ttk.LabelFrame(self, text="워터마크(기본: 가운데) · 배경")
-        wm.pack(fill="x", pady=(6, 0))
+        mid_split = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        mid_split.pack(fill="both", expand=True, pady=(6, 0))
+
+        # 왼쪽: 워터마크/배경
+        wm = ttk.LabelFrame(mid_split, text="워터마크(기본: 가운데) · 배경")
+        mid_split.add(wm, weight=1)  # 왼쪽 폭 비중
 
         ttk.Label(wm, text="불투명도").grid(row=0, column=0, sticky="e")
         self.var_wm_opacity = tk.IntVar(value=30)
@@ -139,8 +143,8 @@ class OptionsPanel(ttk.Frame):
         self.var_font.trace_add("write", lambda *_: self._notify_change())
 
         # ── 루트 목록(루트별 워터마크 텍스트) ──────────────────────────────────
-        roots = ttk.LabelFrame(self, text="루트 목록 (루트별 워터마크 텍스트)")
-        roots.pack(fill="both", expand=True, pady=8)
+        roots = ttk.LabelFrame(mid_split, text="루트 목록 (루트별 워터마크 텍스트)")
+        mid_split.add(roots, weight=2)  # 오른쪽이 조금 더 넓게
 
         cols = ("root", "wm_text")
         self.tree = ttk.Treeview(roots, columns=cols, show="headings", height=6)
