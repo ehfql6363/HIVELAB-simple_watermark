@@ -60,16 +60,34 @@ class OptionsPanel(ttk.Frame):
         # 출력 루트가 바뀌면 변경 알림
         self.var_output.trace_add("write", lambda *_: self._notify_change())
 
-        # ── 타겟 크기 프리셋 ───────────────────────────────────────────────────
+        # ── 타겟 크기 프리셋 + 직접 지정 ───────────────────────────────────────
         size_frame = ttk.Frame(top)
         size_frame.grid(row=0, column=2, padx=0, pady=(0, 2), sticky="w")
         ttk.Label(size_frame, text="타겟 크기:").grid(row=0, column=0, sticky="w")
-        preset = ["원본 그대로"] + [f"{w}x{h}" for (w, h) in DEFAULT_SIZES]
+
+        preset = ["원본 그대로"] + [f"{w}x{h}" for (w, h) in DEFAULT_SIZES] + ["직접 지정…"]
         self.var_size = tk.StringVar(value=preset[0])
         self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset,
                                     width=12, state="readonly")
-        self.cb_size.grid(row=0, column=3, sticky="w")
-        self.cb_size.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
+        self.cb_size.grid(row=0, column=1, sticky="w")
+        self.cb_size.bind("<<ComboboxSelected>>", lambda e: (self._refresh_custom_size_state(), self._notify_change()))
+
+        # 직접 지정 가로/세로
+        self.var_custom_w = tk.IntVar(value=1080)
+        self.var_custom_h = tk.IntVar(value=1080)
+        ttk.Label(size_frame, text=" ").grid(row=0, column=2, sticky="w")  # 약간의 간격
+        self.sp_w = ttk.Spinbox(size_frame, from_=32, to=10000, width=6, textvariable=self.var_custom_w,
+                                command=self._notify_change, state="disabled")
+        self.sp_x = ttk.Label(size_frame, text="x")
+        self.sp_h = ttk.Spinbox(size_frame, from_=32, to=10000, width=6, textvariable=self.var_custom_h,
+                                command=self._notify_change, state="disabled")
+        self.sp_w.grid(row=0, column=3, sticky="w", padx=(0, 2))
+        self.sp_x.grid(row=0, column=4, sticky="w")
+        self.sp_h.grid(row=0, column=5, sticky="w", padx=(2, 0))
+
+        # 사용자가 숫자 타이핑해도 반영
+        self.var_custom_w.trace_add("write", lambda *_: self._notify_change())
+        self.var_custom_h.trace_add("write", lambda *_: self._notify_change())
 
         # ── 워터마크/배경 ──────────────────────────────────────────────────────
         wm = ttk.LabelFrame(self, text="워터마크(기본: 가운데) · 배경")
@@ -118,8 +136,6 @@ class OptionsPanel(ttk.Frame):
         )
         ttk.Button(wm, text="찾기…", command=self._browse_font).grid(row=2, column=6, sticky="w", pady=(4, 4))
         ttk.Button(wm, text="지우기", command=self._clear_font).grid(row=2, column=7, sticky="w", pady=(4, 4))
-
-        # ⬇⬇⬇ 추가: 사용자가 직접 타이핑해도 저장 반영
         self.var_font.trace_add("write", lambda *_: self._notify_change())
 
         # ── 루트 목록(루트별 워터마크 텍스트) ──────────────────────────────────
@@ -171,6 +187,9 @@ class OptionsPanel(ttk.Frame):
         self._edit_iid = None
         self._edit_col = None
 
+        # 처음엔 직접지정 비활성
+        self._refresh_custom_size_state()
+
     # ---------- 외부 API ----------
     def get_output_root_str(self) -> str:
         try:
@@ -209,9 +228,22 @@ class OptionsPanel(ttk.Frame):
         return roots
 
     def collect_options(self):
-        size_str = self.var_size.get().lower().replace(" ", "")
+        size_str = (self.var_size.get() or "").lower().replace(" ", "")
+        # 1) 원본
         if "원본" in size_str:
             sizes = [(0, 0)]
+        # 2) 직접 지정
+        elif "직접" in size_str:
+            try:
+                w = int(self.var_custom_w.get())
+                h = int(self.var_custom_h.get())
+                if w <= 0 or h <= 0:
+                    raise ValueError
+                sizes = [(w, h)]
+            except Exception:
+                # 유효하지 않으면 첫 프리셋으로 폴백
+                sizes = [DEFAULT_SIZES[0]]
+        # 3) 프리셋 "WxH"
         else:
             try:
                 w, h = map(int, size_str.split("x"))
@@ -226,7 +258,7 @@ class OptionsPanel(ttk.Frame):
             self.var_bg.get().strip(),
             int(self.var_wm_opacity.get()),
             int(self.var_wm_scale.get()),
-            out_root_str,              # ⬅ 여기서 반환
+            out_root_str,
             self.get_roots(),
             self.var_fill.get().strip() or "#000000",
             self.var_stroke.get().strip() or "#FFFFFF",
@@ -245,14 +277,27 @@ class OptionsPanel(ttk.Frame):
             pass
 
         # 크기/색/폰트 초기값
+        # 크기: (0,0)=원본, 프리셋과 일치하면 프리셋, 아니면 '직접 지정…'
         try:
             s0 = settings.sizes[0] if settings.sizes else None
+            preset_set = {(w, h) for (w, h) in DEFAULT_SIZES}
             if s0 == (0, 0):
                 self.var_size.set("원본 그대로")
-            elif s0:
+            elif s0 and s0 in preset_set:
                 self.var_size.set(f"{int(s0[0])}x{int(s0[1])}")
+            elif s0 and isinstance(s0, tuple) and len(s0) == 2:
+                # 커스텀
+                self.var_size.set("직접 지정…")
+                try:
+                    self.var_custom_w.set(int(s0[0]))
+                    self.var_custom_h.set(int(s0[1]))
+                except Exception:
+                    pass
+            # 상태 반영
+            self._refresh_custom_size_state()
         except Exception:
             pass
+
         try:
             self.var_bg.set("#%02X%02X%02X" % settings.bg_color)
         except Exception:
@@ -281,7 +326,6 @@ class OptionsPanel(ttk.Frame):
             self.var_font.set(str(settings.wm_font_path) if settings.wm_font_path else "")
         except Exception:
             pass
-        self._notify_change()
 
         try:
             self._update_swatch(self.sw_bg, self.var_bg.get())
@@ -289,6 +333,8 @@ class OptionsPanel(ttk.Frame):
             self._update_swatch(self.sw_stroke, self.var_stroke.get())
         except Exception:
             pass
+
+        self._notify_change()
 
     def get_recent_dirs(self) -> Tuple[Optional[Path], Optional[Path]]:
         return (self._recent_root_dir, self._recent_font_dir)
@@ -455,6 +501,13 @@ class OptionsPanel(ttk.Frame):
             swatch.configure(bg=hx)
         except Exception:
             swatch.configure(bg="#FFFFFF")
+
+    # ---------- Custom size state ----------
+    def _refresh_custom_size_state(self):
+        is_custom = "직접" in (self.var_size.get() or "")
+        state = "normal" if is_custom else "disabled"
+        for w in (self.sp_w, self.sp_h):
+            w.configure(state=state)
 
     # ---------- change notify ----------
     def _notify_change(self):
