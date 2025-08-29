@@ -41,11 +41,6 @@ def _draw_badge(square_img: Image.Image, text="•", bg=(76,175,80), fg=(255,255
     d.text((cx - tw // 2, cy - th // 2 - 1), text, font=font, fill=fg)
 
 class ThumbGallery(ttk.Frame):
-    """썸네일 그리드(스크롤 가능) + 앵커 오버레이/배지.
-       - 클릭 한 번으로 on_activate 호출
-       - 갤러리/썸네일 어디 위든 휠 스크롤 동작(전역 바인딩 + 포인터 가드)
-       - ← ↑ → ↓ 이동, ▶ 끝에서 다음 줄 첫 칸으로 랩, ◀ 처음에서 이전 줄 마지막 칸으로 랩
-    """
     def __init__(self, master, on_activate: Optional[Callable[[Path], None]] = None,
                  thumb_size: int = 160, cols: int = 5, height: int = 220):
         super().__init__(master)
@@ -55,6 +50,7 @@ class ThumbGallery(ttk.Frame):
         self.fixed_height = int(height)
 
         self._sel_bars: Dict[Path, tk.Frame] = {}
+        self._last_row_index: Optional[int] = None
 
         self.canvas = tk.Canvas(self, highlightthickness=0, height=self.fixed_height)
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -96,6 +92,7 @@ class ThumbGallery(ttk.Frame):
         self.clear()
         self._default_anchor = tuple(default_anchor)
         self._img_anchor_map = dict(img_anchor_map or {})
+        self._last_row_index = None
         if not files:
             return
 
@@ -152,11 +149,11 @@ class ThumbGallery(ttk.Frame):
         self._update_scroll()
 
     def set_active(self, path: Optional[Path], fire: bool = False):
-        # 같은 항목이면(특히 콜백 이후 내부에서 다시 부르는 케이스) 아무 것도 안 함
+        # 같은 항목이면(중복 호출) 아무 것도 안 함
         if path == self._active:
             return
 
-        # 이전 선택 표시 되돌리기 (크기/레이아웃은 건드리지 않음)
+        # 이전 선택 표시 되돌리기
         if self._active and self._active in self._tiles:
             try:
                 self._tiles[self._active].configure(bd=1, relief="groove")
@@ -166,35 +163,35 @@ class ThumbGallery(ttk.Frame):
         self._active = path
 
         if path and path in self._tiles:
-            # 선택 표시 (크기 변화 최소화: 기존과 동일하게)
             try:
                 self._tiles[path].configure(bd=2, relief="solid")
             except Exception:
                 pass
 
-            # 🔑 스크롤은 '사용자 동작(fire=True)'일 때만 수행
+            # 🔑 스크롤은 '사용자 동작(fire=True)'일 때만, 그리고 "행이 바뀐 경우"에만 수행
             if fire:
                 try:
-                    # 기준이 되는 현재 top frac을 잡아두고,
-                    prev_top_frac = self.canvas.yview()[0]
-                except Exception:
-                    prev_top_frac = None
+                    idx = self._order.index(path)
+                except ValueError:
+                    idx = -1
+                row = (idx // self.cols) if idx >= 0 else None
 
-                # 레이아웃이 안정된 뒤 최소 이동
-                self.after_idle(lambda p=path, f=prev_top_frac: self._scroll_into_view(p))
+                # 같은 행이면 스크롤하지 않음
+                if row is not None and row != self._last_row_index:
+                    self.after_idle(lambda p=path: self._scroll_into_view(p))
+                    self._last_row_index = row
 
-            # 콜백은 fire 여부와 상관 없이 필요 시 호출
             if fire and callable(self.on_activate):
                 self.on_activate(path)
 
-    def _scroll_into_view_with_prev(self, path: Path, prev_top_frac: float | None):
+    def _scroll_into_view(self, path: Path):
         try:
             self.update_idletasks()
-
             tile = self._tiles.get(path)
             if not tile:
                 return
 
+            # 전체/뷰 높이
             bbox_all = self.canvas.bbox("all")
             if not bbox_all:
                 return
@@ -202,32 +199,37 @@ class ThumbGallery(ttk.Frame):
             can_h = self.canvas.winfo_height()
             if can_h <= 0 or content_h <= 0:
                 return
-            scrollable = max(1, content_h - can_h)
 
-            # 이전 top 위치 기준으로 판단(없으면 현재 위치)
-            if prev_top_frac is not None:
-                top_px = max(0, min(scrollable, int(prev_top_frac * scrollable)))
-            else:
-                top_px = int(self.canvas.canvasy(0))
+            # 현재 top/bottom
+            top_px = int(self.canvas.canvasy(0))
+            bottom_px = top_px + can_h
 
+            # 타겟 위치/크기
             tile_y = tile.winfo_y()
             tile_h = tile.winfo_height()
-            margin = 8
 
-            top = top_px
-            bottom = top + can_h
+            # 데드존(상/하단 24px 정도는 스크롤하지 않음)
+            dead = 24
+            visible_top = top_px + dead
+            visible_bottom = bottom_px - dead
 
-            if (tile_y - margin) < top:
-                top = tile_y - margin
-            elif (tile_y + tile_h + margin) > bottom:
-                top = tile_y + tile_h + margin - can_h
+            # 이미 충분히 보이면 이동하지 않음
+            if tile_y >= visible_top and (tile_y + tile_h) <= visible_bottom:
+                return
 
-            top = max(0, min(scrollable, top))
+            # 최소 이동만 계산
+            new_top = top_px
+            if tile_y < visible_top:
+                new_top = tile_y - dead
+            elif (tile_y + tile_h) > visible_bottom:
+                new_top = tile_y + tile_h + dead - can_h
 
-            cur_top = int(self.canvas.canvasy(0))
-            if abs(top - cur_top) >= 1:
-                self.canvas.yview_moveto(top / float(scrollable))
+            # 범위 제한
+            max_top = max(0, content_h - can_h)
+            new_top = max(0, min(max_top, new_top))
 
+            if abs(new_top - top_px) >= 1:
+                self.canvas.yview_moveto(new_top / float(max_top if max_top > 0 else 1))
         except Exception:
             pass
 
