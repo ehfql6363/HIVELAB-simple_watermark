@@ -86,9 +86,12 @@ class ThumbGallery(ttk.Frame):
             mt = 0
         return (str(path), int(size), int(mt))
 
+    # thumb_gallery.py
+
     def _get_thumb_base_rgba(self, path: Path, size: int) -> tuple[Image.Image, tuple[int, int, int, int]]:
         """
-        파일을 열어 (size x size) 캔버스에 가운데 정렬로 붙인 RGBA 이미지를 만든 뒤
+        파일을 열어 (size x Hvariable) 캔버스(가로는 size 고정, 세로는 축소 결과 높이)에
+        가운데 정렬(가로만)로 붙인 RGBA 이미지를 만든 뒤
         (base_rgba, content_box) 튜플을 LRU 캐시에 저장/재사용한다.
         content_box = (x0, y0, x1, y1) 는 실제 원본이 들어간 영역.
         """
@@ -102,19 +105,23 @@ class ThumbGallery(ttk.Frame):
         # miss → 생성
         try:
             with Image.open(path) as im_src:
-                # EXIF 회전 보정 + RGB 변환
                 from PIL import ImageOps
                 im = ImageOps.exif_transpose(im_src).convert("RGB").copy()
-            # 썸네일 축소: 품질 대비 속도 좋게 BOX/BILINEAR 권장 (LANCZOS는 느림)
-            im.thumbnail((size, size), Image.Resampling.BILINEAR)
-            base = Image.new("RGBA", (size, size), (245, 245, 245, 255))
-            ox = (size - im.width) // 2
-            oy = (size - im.height) // 2
+            # 세로는 넉넉히, 가로 기준으로만 축소(가로 최대 size)
+            im.thumbnail((size, 10_000), Image.Resampling.BILINEAR)
+            W, H = im.width, im.height
+
+            # 베이스 캔버스는 가로 size, 세로는 실제 축소 높이(H)
+            base = Image.new("RGBA", (size, H), (245, 245, 245, 255))
+            ox = (size - W) // 2
+            oy = 0  # 위에서부터 붙임(세로 패딩 제거)
             base.paste(im, (ox, oy))
-            content_box = (ox, oy, ox + im.width, oy + im.height)
+            content_box = (ox, oy, ox + W, oy + H)
         except Exception:
-            base = Image.new("RGBA", (size, size), (200, 200, 200, 255))
-            content_box = (4, 4, size - 4, size - 4)
+            # 실패 시 안전 폴백: 고정  (size x size*0.75) 정도의 회색
+            H = max(32, int(size * 0.75))
+            base = Image.new("RGBA", (size, H), (200, 200, 200, 255))
+            content_box = (4, 4, size - 4, H - 4)
 
         # LRU put
         self._thumb_base_cache[key] = (base, content_box)
@@ -141,42 +148,64 @@ class ThumbGallery(ttk.Frame):
         self._default_anchor = tuple(default_anchor)
         self._img_anchor_map = dict(img_anchor_map or {})
         self._last_row_index = None
+
         if not files:
             return
 
         self._order = list(files)
         size, pad = self.thumb_size, 8
 
-        # 라벨 예상 높이를 고정(두 줄 기준) → 타일 높이 고정
+        # 라벨(파일명) 예상 높이 고정(두 줄 기준)
         label_h = 34
-        tile_w = size + 16
-        tile_h = size + 16 + label_h
 
+        # 0) 모든 썸네일을 한 번 ‘생성’해서 실제 높이(H)를 미리 구한다
+        #    (캐시에 들어가므로 이후 재사용)
+        per_file_meta: Dict[Path, tuple[Image.Image, tuple[int, int, int, int]]] = {}
+        content_heights: list[int] = []
+        for p in files:
+            base, box = self._get_thumb_base_rgba(p, size)
+            per_file_meta[p] = (base, box)
+            x0, y0, x1, y1 = box
+            content_heights.append(max(1, y1 - y0))  # 실제 썸네일 내용 높이
+
+        # 1) 한 줄(타일) 높이 = (그 줄의) 최대 콘텐츠 높이 + 내부 여백(상하 16) + 라벨 높이
+        max_content_h = max(content_heights) if content_heights else size
+        tile_w = size + 16
+        tile_h = max_content_h + 16 + label_h
+
+        # ▶ 갤러리 자체 높이를 '한 줄'에 딱 맞춰 보여주도록 세팅
+        #    (여러 줄이면 스크롤로 보이게)
+        try:
+            self.fixed_height = int(tile_h)
+            self.canvas.configure(height=self.fixed_height)
+        except Exception:
+            pass
+
+        # 2) 타일 생성
         for i, p in enumerate(files):
             r, c = divmod(i, self.cols)
 
-            # ★ 타일 고정 크기 + grid_propagate(False)로 자식 변경에도 크기 불변
             tile = tk.Frame(self.inner, bd=1, relief="groove", width=tile_w, height=tile_h, takefocus=1)
             tile.grid(row=r, column=c, padx=pad, pady=pad, sticky="nsew")
             tile.grid_propagate(False)
 
-            # 컨텐츠 컨테이너
             body = tk.Frame(tile, bd=0, relief="flat")
             body.pack(fill="both", expand=True)
 
-            # 이미지
-            tkim = self._make_thumb_with_overlay(p, size)
+            # 준비해둔 베이스(가변 높이)를 사용해 PhotoImage 생성
+            base_rgba, content_box = per_file_meta[p]
+            img = base_rgba.copy()
+            tkim = ImageTk.PhotoImage(img)
+            self._imgs[p] = tkim
+
             lbl_img = tk.Label(body, image=tkim, takefocus=0)
             lbl_img.image = tkim
-            self._imgs[p] = tkim
             self._img_labels[p] = lbl_img
-            lbl_img.pack(padx=4, pady=(6, 2))
+            lbl_img.pack(padx=4, pady=(4, 0))
 
-            # 파일명
             lbl_txt = tk.Label(body, text=p.name, wraplength=size, justify="center", takefocus=0)
-            lbl_txt.pack(padx=4, pady=(4, 2))
+            lbl_txt.pack(padx=4, pady=(2, 0))
 
-            # ★ 항상 존재하는 하단 선택 바(높이 3px). 기본은 “투명처럼 보이는” 색.
             sel_bar = tk.Frame(tile, height=3, bg=tile.cget("background"))
             sel_bar.pack(side="bottom", fill="x")
             self._sel_bars[p] = sel_bar
@@ -337,24 +366,6 @@ class ThumbGallery(ttk.Frame):
 
     def _update_scroll(self):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def _scroll_into_view(self, path: Path):
-        try:
-            self.update_idletasks()
-            tile = self._tiles.get(path)
-            if not tile: return
-            tile_y = tile.winfo_y()
-            tile_h = tile.winfo_height()
-            inner_h = max(1, self.inner.winfo_height())
-            can_h = self.canvas.winfo_height()
-            top = self.canvas.canvasy(0)
-            bottom = top + can_h
-            if tile_y < top:
-                self.canvas.yview_moveto(tile_y / inner_h)
-            elif tile_y + tile_h > bottom:
-                self.canvas.yview_moveto((tile_y + tile_h - can_h) / inner_h)
-        except Exception:
-            pass
 
     # ---------- wheel handling (bind_all + pointer guard) ----------
 

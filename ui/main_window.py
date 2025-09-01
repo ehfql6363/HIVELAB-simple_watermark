@@ -17,6 +17,7 @@ from ui.post_list import PostList
 from ui.preview_pane import PreviewPane
 from ui.thumb_gallery import ThumbGallery
 import ttkbootstrap as tb
+from ui.scrollframe import ScrollFrame
 
 # DnD 지원 루트
 try:
@@ -37,12 +38,13 @@ class MainWindow(BaseTk):
         self.controller = controller
         self.posts: Dict[str, dict] = {}
 
-        # ttkbootstrap 테마 주입
         try:
-            self._style.configure("TButton", padding=(10,6))
+            self._style = tb.Style()  # 혹은 ttk.Style()
+            # 테마를 강제로 바꾸고 싶다면: tb.Style("flatly") 등
+            self._style.configure("TButton", padding=(10, 6))
             self._style.configure("Treeview.Heading", font=("", 10, "bold"))
-        except Exception: pass
-
+        except Exception:
+            pass
 
         self.app_settings = AppSettings.load()
         self._wm_anchor: Tuple[float, float] = tuple(self.app_settings.wm_anchor)
@@ -130,40 +132,21 @@ class MainWindow(BaseTk):
     # 빌드
     # ──────────────────────────────────────────────────────────────────────
     def _build_header(self, parent: ttk.Frame):
-        # 버튼바(스캔/미리보기) 제거 요구사항 반영 → 오직 옵션 패널만
         self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
         self.opt.pack(fill="x")
-
-        actions = ttk.Frame(parent)
-        actions.pack(fill="x", padx=2, pady=(8, 2))  # 한 줄 아래, 오른쪽 정렬용 컨테이너
-
-        right = ttk.Frame(actions)
-        right.pack(side="right")  # 오른쪽 붙이기
-
-        self.header_prog = ttk.Progressbar(right, length=360, mode="determinate",
-                                           style="info.Horizontal.TProgressbar")
-        self.header_prog.pack(side="left", padx=(0, 10))
-
-        self.btn_start = ttk.Button(right, text="시작 (F5)", command=self.on_start_batch,
-                                    style = "primary.TButton")
-        self.btn_start.pack(side="left", padx=(0, 8))
-
-        self.btn_open = ttk.Button(right, text="출력 폴더 열기 (F6)", command=self._open_output_folder,
-                                   style = "secondary.TButton")
-        self.btn_open.pack(side="left", padx=(0, 2))
 
         # 단축키 바인딩
         self.bind_all("<F5>", lambda e: self.on_start_batch())
         self.bind_all("<F6>", lambda e: self._open_output_folder())
 
     def _build_middle(self, parent):
-        # 전체 가로 분할: 좌(게시물), 우(에디터 + [프리뷰/썸네일])
+        # 좌우 분할
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        mid.pack(fill="both", expand=True, padx=12, pady=(6, 12))
+        mid.pack(fill="both", expand=True, padx=8, pady=(8, 8))
 
-        # ── 왼쪽: 게시물(트리)만 ─────────────────────────
+        # ── 왼쪽: 게시물 트리 ─────────────────────
         left_frame = ttk.Frame(mid)
-        mid.add(left_frame, weight=3)
+        mid.add(left_frame, weight=1)
 
         self.post_list = PostList(
             left_frame,
@@ -176,11 +159,12 @@ class MainWindow(BaseTk):
         )
         self.post_list.pack(fill="both", expand=True)
 
-        # ── 오른쪽: 일반 프레임 + (프리뷰/썸네일) 전용 PanedWindow ──────────
-        right_col = ttk.Frame(mid)
-        mid.add(right_col, weight=5)
+        # ── 오른쪽: 스크롤 가능한 컬럼 ──
+        right_scroll = ScrollFrame(mid)
+        mid.add(right_scroll, weight=6)
+        right_col = right_scroll.inner
 
-        # (1) 개별 이미지 워터마크 에디터: 맨 위, 여백 최소
+        # (1) 개별 이미지 워터마크 에디터
         editor_frame = ttk.Frame(right_col)
         self.wm_editor = ImageWMEditor(
             editor_frame,
@@ -188,13 +172,15 @@ class MainWindow(BaseTk):
             on_clear=self._on_image_wm_clear
         )
         self.wm_editor.pack(fill="x", expand=False)
-        editor_frame.pack(fill="x", side="top", padx=0, pady=(0, 10))  # ← 딱 붙게, 아래만 약간
+        editor_frame.pack(fill="x", side="top", padx=0, pady=(0, 8))
 
-        # (2) 프리뷰/썸네일만 세로 리사이즈: 여기만 PanedWindow 사용
-        stack = ttk.PanedWindow(right_col, orient=tk.VERTICAL)
-        stack.pack(fill="both", expand=True, side="top", padx=2, pady=(0, 2))
+        # (2) 프리뷰/썸네일 Paned(V)  → tk.PanedWindow 사용
+        MIN_PREVIEW, MIN_GALLERY = 360, 200
 
-        # 프리뷰
+        stack = tk.PanedWindow(right_col, orient="vertical")  # ★ tk.PanedWindow
+        stack.pack(fill="both", expand=True, side="top")
+
+        # 프리뷰 pane
         pre_frame = ttk.Frame(stack)
         self.preview = PreviewPane(
             pre_frame,
@@ -203,24 +189,34 @@ class MainWindow(BaseTk):
             on_clear_individual=self._on_clear_individual
         )
         self.preview.pack(fill="both", expand=True)
-        stack.add(pre_frame, weight=6)
+        stack.add(pre_frame, minsize=MIN_PREVIEW)  # ★ minsize 적용
 
-        # 썸네일
+        # 썸네일 pane
         gal_frame = ttk.Frame(stack)
         self.gallery = ThumbGallery(
             gal_frame,
             on_activate=self._on_activate_image,
-            thumb_size=168, cols=6, height=200
+            thumb_size=168, cols=6, height=MIN_GALLERY
         )
         self.gallery.pack(fill="x", expand=False)
-        stack.add(gal_frame, weight=1)
+        stack.add(gal_frame, minsize=MIN_GALLERY)  # ★ minsize 적용
 
-        # 프리뷰/썸네일 최소 높이 유지(옵션)
-        MIN_PREVIEW, MIN_GALLERY = 360, 180
-        self._stack_sash_job = None
+        # 초기 sash 위치: 썸네일이 최소 높이 확보되도록
+        def _init_sash():
+            try:
+                stack.update_idletasks()
+                total = stack.winfo_height()
+                if total > (MIN_PREVIEW + MIN_GALLERY):
+                    stack.sashpos(0, total - MIN_GALLERY)
+                else:
+                    stack.sashpos(0, MIN_PREVIEW)
+            except Exception:
+                pass
 
-        def _apply_stack_sash():
-            self._stack_sash_job = None
+        self.after_idle(_init_sash)
+
+        # 리사이즈 시에도 최소 높이 유지 (단일 보정만)
+        def _enforce_mins(_=None):
             try:
                 total = stack.winfo_height()
                 if total <= 0:
@@ -228,22 +224,22 @@ class MainWindow(BaseTk):
                 pos = stack.sashpos(0)
                 lo = MIN_PREVIEW
                 hi = max(MIN_PREVIEW, total - MIN_GALLERY)
-                pos = min(max(pos, lo), hi)
-                if pos != stack.sashpos(0):
-                    stack.sashpos(0, pos)
+                new_pos = min(max(pos, lo), hi)
+                if new_pos != pos:
+                    stack.sashpos(0, new_pos)
             except Exception:
                 pass
 
-        def _debounced_enforce(_=None):
-            if self._stack_sash_job:
-                try:
-                    self.after_cancel(self._stack_sash_job)
-                except Exception:
-                    pass
-            self._stack_sash_job = self.after(60, _apply_stack_sash)
+        stack.bind("<Configure>", lambda e: self.after(40, _enforce_mins))
 
-        stack.bind("<Configure>", _debounced_enforce)
-        self.after(0, _apply_stack_sash)
+        # (3) 우측 하단 버튼바 — 썸네일 아래, 오른쪽 정렬
+        btnbar = ttk.Frame(right_col)
+        btnbar.pack(fill="x", side="top", pady=(8, 0))
+        ttk.Frame(btnbar).pack(side="left", fill="x", expand=True)  # 오른쪽 정렬 스페이서
+        self.btn_start = ttk.Button(btnbar, text="시작 (F5)", command=self.on_start_batch)
+        self.btn_start.pack(side="right", padx=(6, 0))
+        self.btn_open = ttk.Button(btnbar, text="출력 폴더 열기 (F6)", command=self._open_output_folder)
+        self.btn_open.pack(side="right")
 
     def _effective_wm_text_for(self, meta: dict, path: Path | None) -> str:
         """이미지/게시물/루트/앱설정 순으로 워터마크 텍스트 결정."""
@@ -712,27 +708,15 @@ class MainWindow(BaseTk):
 
         # 진행바 초기화
         total = sum(len(meta["files"]) for meta in self.posts.values()) * len(settings.sizes)
-        try:
-            self.header_prog.configure(maximum=total, value=0)
-        except Exception:
-            pass
 
         # 버튼 상태
         self.btn_start.configure(state="disabled")
         self.btn_open.configure(state="disabled")
 
         def on_prog(n):
-            try:
-                self.header_prog.configure(value=n)
-                self.header_prog.update_idletasks()
-            except Exception:
-                pass
+            return
 
         def on_done(n, _out=out_root):
-            try:
-                self.header_prog.configure(value=total)
-            except Exception:
-                pass
             # 버튼 복구
             self.btn_start.configure(state="normal")
             self.btn_open.configure(state="normal")

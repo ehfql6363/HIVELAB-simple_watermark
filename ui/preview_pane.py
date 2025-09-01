@@ -67,11 +67,14 @@ class _CheckerCanvas(tk.Canvas):
         self._resample_fast = False
         self._hq_job_id: Optional[str] = None
 
+        self._force_reload = False
+
         self.bind("<Configure>", self._on_resize)
 
     # ------- 외부 제어 -------
     def set_image(self, pil_img: Image.Image | None):
         self._pil_img = pil_img
+        self._force_reload = True
         self._queue_render(hq=True)
 
     def set_grid_visible(self, visible: bool):
@@ -158,7 +161,8 @@ class _CheckerCanvas(tk.Canvas):
         prev_src_id = self._last.get("src_id")
 
         reuse_image = (
-            self._img_id is not None
+            not self._force_reload
+            and self._img_id is not None
             and iw == self._last["iw"]
             and ih == self._last["ih"]
             and cur_src_id == prev_src_id
@@ -175,6 +179,8 @@ class _CheckerCanvas(tk.Canvas):
             else:
                 self.itemconfigure(self._img_id, image=tkimg)
                 self.coords(self._img_id, x0, y0)
+
+        self._force_reload = False
 
         self.tag_lower("checker")
         self.tag_raise("content")
