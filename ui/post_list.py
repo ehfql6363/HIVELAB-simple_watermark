@@ -78,6 +78,15 @@ class PostList(ttk.Frame):
         self._iid_to_postkey = {}  # 게시물 iid -> post_key
         self._iid_to_imginfo = {}  # 이미지 iid -> (post_key, Path)
 
+        # Undo
+        self._undo_stack = []
+        self._pre_edit_snapshot: Optional[dict] = None
+
+        try:
+            self.bind_all("<Control-z>", lambda e: self._on_undo())
+        except Exception:
+            pass
+
     # ---------- 데이터 채우기 ----------
 
     def set_posts(self, posts: Dict[str, dict]):
@@ -364,6 +373,44 @@ class PostList(ttk.Frame):
         cur = self.tree.set(rowid, "wm_text")
         self._edit_iid, self._edit_col = rowid, colid
 
+        # ★ 편집 전 스냅샷 저장(Undo용)
+        self._pre_edit_snapshot = None
+        item = self._get_item(rowid)
+        if item:
+            typ, key = item
+            if typ == "post":
+                post_key = key  # str
+                meta = self._posts_ref.get(post_key) or {}
+                # 이미지 인라인/오버라이드까지 되돌리려면 깊은 복사
+                import copy
+                self._pre_edit_snapshot = {
+                    "typ": "post",
+                    "iid": rowid,
+                    "post_key": post_key,
+                    "prev_cell": cur,
+                    "meta_before": {
+                        "had_wm_key": ("wm_text_edit" in meta),
+                        "wm_text_edit": meta.get("wm_text_edit", None),
+                        "img_wm_text_edits": copy.deepcopy(meta.get("img_wm_text_edits") or {}),
+                        "img_overrides": copy.deepcopy(meta.get("img_overrides") or {}),
+                    }
+                }
+            elif typ == "image":
+                post_key, path = key
+                meta = self._posts_ref.get(post_key) or {}
+                img_edits = meta.get("img_wm_text_edits") or {}
+                self._pre_edit_snapshot = {
+                    "typ": "image",
+                    "iid": rowid,
+                    "post_key": post_key,
+                    "path": path,
+                    "prev_cell": cur,
+                    "meta_before": {
+                        "had_img_key": (path in img_edits),
+                        "prev_text": (img_edits.get(path) if path in img_edits else None),
+                    }
+                }
+
         self._edit_entry = ttk.Entry(self.tree)
         self._edit_entry.insert(0, cur)
         self._edit_entry.select_range(0, tk.END)
@@ -380,41 +427,44 @@ class PostList(ttk.Frame):
         if not self._edit_entry:
             return
         if commit and self._edit_iid and self._edit_col == "#1":
-            val = self._edit_entry.get()
-            self._set_row_wm_text(self._edit_iid, val)
+            new_val = self._edit_entry.get()
+            self._set_row_wm_text(self._edit_iid, new_val)
 
             # 어디에 써야 하는지 판별
             item = self._get_item(self._edit_iid)
             if item:
                 typ, key = item
+
                 if typ == "post":
                     post_key = key  # str
-                    # 모델에 저장
+                    # 모델에 저장 (빈 문자열 포함 존중)
                     if post_key in self._posts_ref:
                         meta = self._posts_ref[post_key]
-                        meta["wm_text_edit"] = val  # 빈 문자열 포함 그대로 저장
+                        meta["wm_text_edit"] = new_val
 
-                        # ⬇⬇ 추가: 폴더 텍스트가 바뀌면 하위 이미지 개별 텍스트 초기화
-                        # 1) 인라인 텍스트 편집 맵 제거
-                        imgs_map = meta.get("img_wm_text_edits")
-                        if imgs_map:
-                            imgs_map.clear()
-                            meta["img_wm_text_edits"] = {}
+                    # Undo 스택에 기록(스냅샷 + 현재 상태 together)
+                    if self._pre_edit_snapshot and self._pre_edit_snapshot.get("typ") == "post":
+                        rec = {
+                            "typ": "post",
+                            "iid": self._edit_iid,
+                            "post_key": post_key,
+                            "snapshot_before": self._pre_edit_snapshot,  # deep copy 포함
+                            "after": {  # 현재 상태도 캡처(redo 대비는 아니지만, 체인 Undo 안정성↑)
+                                "wm_text_edit": new_val
+                            }
+                        }
+                        self._undo_stack.append(rec)
 
-                        # 2) 오버라이드에 들어있던 'text' 키 제거(다른 옵션은 보존)
-                        ov_map = meta.get("img_overrides") or {}
-                        for p, ov in list(ov_map.items()):
-                            if isinstance(ov, dict) and "text" in ov:
-                                ov.pop("text", None)
-
+                    # 외부 알림
                     if callable(self.on_wmtext_change):
-                        self.on_wmtext_change(post_key, val)
+                        self.on_wmtext_change(post_key, new_val)
 
-                    # 트리뷰 즉시 리프레시
+                    # 트리 표시 재계산
                     try:
                         self.refresh_wm_for_post(post_key)
                     except Exception:
                         pass
+
                 else:
                     post_key, path = key
                     meta = self._posts_ref.get(post_key)
@@ -422,11 +472,114 @@ class PostList(ttk.Frame):
                         imgs_map = meta.get("img_wm_text_edits")
                         if imgs_map is None:
                             imgs_map = meta["img_wm_text_edits"] = {}
-                        imgs_map[path] = val
-                    if callable(self.on_image_wmtext_change):
-                        self.on_image_wmtext_change(post_key, path, val)
+                        imgs_map[path] = new_val
 
+                    # Undo 스택 기록
+                    if self._pre_edit_snapshot and self._pre_edit_snapshot.get("typ") == "image":
+                        rec = {
+                            "typ": "image",
+                            "iid": self._edit_iid,
+                            "post_key": post_key,
+                            "path": path,
+                            "snapshot_before": self._pre_edit_snapshot,
+                            "after": {
+                                "img_text": new_val
+                            }
+                        }
+                        self._undo_stack.append(rec)
+
+                    # 외부 알림(프리뷰/에디터 싱크)
+                    if callable(self.on_image_wmtext_change):
+                        self.on_image_wmtext_change(post_key, path, new_val)
+
+        # 에디터 정리
         self._edit_entry.destroy()
         self._edit_entry = None
         self._edit_iid = None
         self._edit_col = None
+        self._pre_edit_snapshot = None
+
+
+    def _on_undo(self):
+        """Ctrl+Z: 마지막 인라인 편집 되돌리기 (여러 단계)"""
+        if not self._undo_stack:
+            return
+
+        rec = self._undo_stack.pop()
+        typ = rec.get("typ")
+
+        if typ == "post":
+            post_key = rec.get("post_key")
+            snap = rec.get("snapshot_before") or {}
+            prev_cell = (snap.get("prev_cell") or "")
+
+            # 트리 셀 복원
+            try:
+                self.tree.set(rec.get("iid"), "wm_text", prev_cell)
+            except Exception:
+                pass
+
+            # 모델 복원 (깊은 스냅샷 사용)
+            meta = self._posts_ref.get(post_key) or {}
+            before = (snap.get("meta_before") or {})
+
+            # wm_text_edit 키 존재/값 복원
+            if before.get("had_wm_key", False):
+                meta["wm_text_edit"] = before.get("wm_text_edit", "")
+            else:
+                if "wm_text_edit" in meta:
+                    del meta["wm_text_edit"]
+
+            # 이미지 인라인/오버라이드(텍스트 포함) 통째로 복원
+            meta["img_wm_text_edits"] = before.get("img_wm_text_edits", {})
+            if not meta["img_wm_text_edits"]:
+                # 깔끔히 제거
+                meta.pop("img_wm_text_edits", None)
+
+            meta["img_overrides"] = before.get("img_overrides", {})
+            if not meta["img_overrides"]:
+                meta.pop("img_overrides", None)
+
+            # 트리 갱신(폴더 + 자식 이미지 재계산)
+            try:
+                self.refresh_wm_for_post(post_key)
+            except Exception:
+                pass
+
+            # 주의: on_wmtext_change를 여기서 호출하면 MainWindow 쪽의
+            #       "자식 텍스트 소스 삭제" 로직이 다시 실행될 수 있음.
+            #       되돌리기 목적상, 여기서는 콜백을 부르지 않는 편이 안전합니다.
+            #       (필요시 MainWindow에 'silent' 플래그 추가해 확장 가능)
+
+        elif typ == "image":
+            post_key = rec.get("post_key")
+            path = rec.get("path")
+            snap = rec.get("snapshot_before") or {}
+            prev_cell = (snap.get("prev_cell") or "")
+
+            # 트리 셀 복원
+            try:
+                self.tree.set(rec.get("iid"), "wm_text", prev_cell)
+            except Exception:
+                pass
+
+            # 모델 복원
+            meta = self._posts_ref.get(post_key) or {}
+            imgs_map = meta.get("img_wm_text_edits") or {}
+
+            before = (snap.get("meta_before") or {})
+            if before.get("had_img_key", False):
+                imgs_map[path] = before.get("prev_text", "")
+                meta["img_wm_text_edits"] = imgs_map
+            else:
+                if path in imgs_map:
+                    del imgs_map[path]
+                if not imgs_map and "img_wm_text_edits" in meta:
+                    del meta["img_wm_text_edits"]
+
+            # 외부 알림(이미지 변경은 프리뷰/패널 싱크에 안전)
+            if callable(self.on_image_wmtext_change):
+                try:
+                    self.on_image_wmtext_change(post_key, path, imgs_map.get(path, ""))
+                except Exception:
+                    pass
