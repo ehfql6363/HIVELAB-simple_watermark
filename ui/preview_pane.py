@@ -315,34 +315,34 @@ class PreviewPane(ttk.Frame):
         self._placement_mode = tk.StringVar(value="drag")
 
         top = ttk.Frame(self)
-        top.pack(fill="x", pady=(0, 0))
+        top.pack(fill="x", padx=4, pady=(4, 6))
         self.lbl_left_cap = ttk.Label(top, text="적용", font=("", 10, "bold"))
         self.lbl_right_cap = ttk.Label(top, text="원본", font=("", 10, "bold"))
         self.btn_swap = ttk.Button(top, text="← 좌우 교체 →", command=self._on_swap)
-        self.lbl_left_cap.pack(side="left", padx=4)
-        self.btn_swap.pack(side="left", padx=8)
-        self.lbl_right_cap.pack(side="left", padx=4)
+        self.lbl_left_cap.pack(side="left", padx=6)
+        self.btn_swap.pack(side="left", padx=10)
+        self.lbl_right_cap.pack(side="left", padx=6)
 
-        ttk.Label(top, text="배치:").pack(side="left", padx=(16,2))
+        ttk.Label(top, text="배치:").pack(side="left", padx=(16, 4))
         ttk.Radiobutton(top, text="드래그", variable=self._placement_mode,
                         value="drag", command=self._on_mode_change).pack(side="left")
         ttk.Radiobutton(top, text="3×3 그리드", variable=self._placement_mode,
-                        value="grid", command=self._on_mode_change).pack(side="left", padx=(4, 0))
+                        value="grid", command=self._on_mode_change).pack(side="left", padx=(6, 0))
 
 
         ttk.Button(top, text="모든 이미지에 적용",
                    command=lambda: on_apply_all and on_apply_all(self._anchor_norm)
-                   ).pack(side="left", padx=(12, 4))
+                   ).pack(side="left", padx=(14, 6))
         ttk.Button(top, text="현재 이미지 기본 따르기",
                    command=lambda: self._on_clear_individual and self._on_clear_individual()
                    ).pack(side="left")
 
         container = ttk.Frame(self)
-        container.pack(fill="both", expand=True, pady=4)
+        container.pack(fill="both", expand=True, padx=4, pady=6)
         self.box_before = tk.Frame(container, bd=1, relief="solid")
         self.box_after  = tk.Frame(container, bd=2, relief="solid")
-        self.box_before.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-        self.box_after.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
+        self.box_before.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.box_after.grid(row=0, column=1, sticky="nsew", padx=6, pady=6)
 
         self.canvas_before = _CheckerCanvas(self.box_before)
         self.canvas_after  = _CheckerCanvas(self.box_after)

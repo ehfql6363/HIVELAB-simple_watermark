@@ -28,21 +28,22 @@ class StatusBar(ttk.Frame):
         self._output_root: Optional[Path] = None
 
         # 상단: 컨트롤 + 진행바
-        top = ttk.Frame(self); top.pack(fill="x")
-        self.btn_start = ttk.Button(top, text="시작", command=self._handle_start)
+        top = ttk.Frame(self); top.pack(fill="x", padx=6, pady=(6, 4))
+        self.btn_start = ttk.Button(top, text="시작", command=self._handle_start, style="primary.TButton")
         self.btn_start.pack(side="left")
 
-        self.btn_open = ttk.Button(top, text="출력 폴더 열기", command=self._open_output_root)
-        self.btn_open.pack(side="left", padx=6)
+        self.btn_open = ttk.Button(top, text="출력 폴더 열기", command=self._open_output_root, style="secondary.TButton")
+        self.btn_open.pack(side="left", padx=8)
         self.btn_open.state(["disabled"])
 
-        self.pbar = ttk.Progressbar(top, mode="determinate", maximum=100, value=0)
-        self.pbar.pack(side="left", fill="x", expand=True, padx=(10, 6))
+        self.pbar = ttk.Progressbar(top, mode="determinate", maximum=100, value=0,
+                                    style="info.Horizontal.TProgressbar")
+        self.pbar.pack(side="left", fill="x", expand=True, padx=(12, 8))
         self.lbl = ttk.Label(top, text="0 / 0")
         self.lbl.pack(side="left")
 
         # 하단: 로그
-        bottom = ttk.Frame(self); bottom.pack(fill="both", expand=True, pady=(6,0))
+        bottom = ttk.Frame(self); bottom.pack(fill="both", expand=True, padx=6, pady=(6, 8))
         self.txt = tk.Text(bottom, height=4, wrap="none", state="disabled")
         ybar = ttk.Scrollbar(bottom, orient="vertical", command=self.txt.yview)
         self.txt.configure(yscrollcommand=ybar.set)

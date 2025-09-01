@@ -22,8 +22,8 @@ class ScrollFrame(ttk.Frame):
         self.inner = ttk.Frame(self.canvas)
         self._win_id = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
 
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.vbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True, padx=(0, 4), pady=(2, 2))
+        self.vbar.pack(side="right", fill="y", padx=(0, 2), pady=(2, 2))
 
         # 레이아웃 동기
         self.inner.bind("<Configure>", self._on_inner_config)

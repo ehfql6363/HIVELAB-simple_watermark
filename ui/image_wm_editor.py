@@ -37,14 +37,6 @@ def _hex_from_rgb(rgb: Tuple[int, int, int]) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ImageWMEditor(ttk.Frame):
-    """
-    개별 이미지 워터마크 에디터(분리형)
-      - set_active_image_and_defaults(path, cfg) 로 대상/기본값 주입
-      - on_apply(path, override_dict) / on_clear(path)
-    반응형 레이아웃:
-      - 넓을 때: [글자색 | 불투명 | 스케일 | 외곽선색 | 외곽선 굵기] 한 줄
-      - 좁을 때: 1행 [글자색 | 불투명 | 스케일], 2행 [외곽선색 | 외곽선 굵기]
-    """
     def __init__(
         self,
         master,
@@ -65,8 +57,8 @@ class ImageWMEditor(ttk.Frame):
         self.PADY = 6
 
         # ── 컨테이너
-        self.box = ttk.LabelFrame(self, text="개별 이미지 워터마크", padding=0)
-        self.box.pack(fill="x", expand=False)
+        self.box = ttk.LabelFrame(self, text="개별 이미지 워터마크", padding=(10, 8))
+        self.box.pack(fill="x", expand=False, padx=0, pady=(0, 0))
 
         # 상태 변수들
         self.var_wm_text = tk.StringVar(value="")
@@ -78,19 +70,21 @@ class ImageWMEditor(ttk.Frame):
         self.var_font = tk.StringVar(value="")
 
         # 열 구성: 0~5열 (0=좌측 라벨, 1~4=입력부, 5=오른쪽 버튼)
+        # ▶ 1~4는 균등 확장, 5도 살짝 숨 쉴 공간을 주어 오른쪽 버튼이 덜 끼이게
+        self.box.grid_columnconfigure(0, weight=0)  # "텍스트" 라벨 열
         for c in (1, 2, 3, 4):
             self.box.grid_columnconfigure(c, weight=1, uniform="wmcols")
-        self.box.grid_columnconfigure(5, weight=0)
+        self.box.grid_columnconfigure(5, weight=1)  # trailing 버튼이 있는 열도 약간 확장
 
         # ── 0행: 텍스트
         ttk.Label(self.box, text="텍스트").grid(
             row=0, column=0, sticky="e",
-            padx=(self.PADX_L, self.PADX_M), pady=(self.PADY, 2)
+            padx=(self.PADX_L, self.PADX_M), pady=(self.PADY, 4)
         )
         self.ent_text = ttk.Entry(self.box, textvariable=self.var_wm_text)
         self.ent_text.grid(
             row=0, column=1, columnspan=4, sticky="we",
-            padx=(0, self.PADX_L), pady=(self.PADY, 2)
+            padx=(0, self.PADX_L), pady=(self.PADY, 4)
         )
 
         # ── 1~2행: 반응형 그룹(글자색/불투명/스케일/외곽선색/외곽선 굵기)
@@ -108,17 +102,15 @@ class ImageWMEditor(ttk.Frame):
             padx=(0, self.PADX_M), pady=(2, self.PADY)
         )
         self.btn_font = ttk.Button(self.box, text="찾기…", command=self._browse_font)
-        self.btn_font.grid(
-            row=3, column=4, sticky="w",
-            padx=(0, self.PADX_M), pady=(2, self.PADY)
-        )
+        self.btn_font.grid(row=3, column=4, sticky="w", padx=(0, self.PADX_M), pady=(2, self.PADY))
+
         self.btns_trailing = ttk.Frame(self.box, padding=0)
-        self.btns_trailing.grid(
-            row=3, column=5, sticky="e",
-            padx=(0, self.PADX_L), pady=(2, self.PADY)
-        )
-        ttk.Button(self.btns_trailing, text="적용", command=self._apply_clicked).pack(side="left", padx=(0, 6))
-        ttk.Button(self.btns_trailing, text="해제", command=self._clear_clicked).pack(side="left")
+        self.btns_trailing.grid(row=3, column=5, sticky="e", padx=(6, self.PADX_L), pady=(2, self.PADY))
+
+        self.btn_apply = ttk.Button(self.btns_trailing, text="적용", command=self._apply_clicked)
+        self.btn_apply.pack(side="left", padx=(0, 6))
+        self.btn_clear = ttk.Button(self.btns_trailing, text="해제", command=self._clear_clicked)
+        self.btn_clear.pack(side="left")
 
         # 스와치 실시간 반영
         self.var_fill.trace_add("write", lambda *_: self._update_swatch(self.sw_fill, self.var_fill.get()))
@@ -128,7 +120,17 @@ class ImageWMEditor(ttk.Frame):
         self.after(0, self._relayout)
 
         # 리사이즈 감지 → 반응형 재배치
+        # ▶ 박스/부모의 크기 변화에도 반응하도록 바인딩 추가
         self.bind("<Configure>", self._on_configure)
+        self.box.bind("<Configure>", self._on_configure)
+
+        try:
+            self.master.bind("<Configure>", self._on_configure)
+        except Exception:
+            pass
+
+        self.bind("<Configure>", lambda e: self._apply_responsive_labels())
+        self.after(0, self._apply_responsive_labels)
 
     # ──────────────────────────────────────────────────────────────────
     # 그룹 생성(글자색/외곽선색/불투명/스케일/외곽선 굵기)
@@ -137,45 +139,45 @@ class ImageWMEditor(ttk.Frame):
         # 글자색
         self.grp_fill = ttk.Frame(self.box, padding=0)
         self.lbl_fill = ttk.Label(self.grp_fill, text="글자색")
-        self.ent_fill = ttk.Entry(self.grp_fill, textvariable=self.var_fill, width=10)
-        self.sw_fill = tk.Canvas(self.grp_fill, width=28, height=16, highlightthickness=1, highlightbackground="#AAA")
-        self.btn_fill = ttk.Button(self.grp_fill, text="선택", command=lambda: self._pick_color(self.var_fill, self.sw_fill))
+        self.ent_fill = ttk.Entry(self.grp_fill, textvariable=self.var_fill, width=7)
+        self.sw_fill = tk.Canvas(self.grp_fill, width=28, height=16, highlightthickness=1, highlightbackground="#AAA", borderwidth=1)
+        self.btn_fill = ttk.Button(self.grp_fill, text="선택", command=lambda: self._pick_color(self.var_fill, self.sw_fill), width=5)
         self._pack_color_group(self.grp_fill, self.lbl_fill, self.ent_fill, self.sw_fill, self.btn_fill)
         self._update_swatch(self.sw_fill, self.var_fill.get())
 
         # 외곽선색
         self.grp_stroke = ttk.Frame(self.box, padding=0)
         self.lbl_stroke = ttk.Label(self.grp_stroke, text="외곽선색")
-        self.ent_stroke = ttk.Entry(self.grp_stroke, textvariable=self.var_stroke, width=10)
-        self.sw_stroke = tk.Canvas(self.grp_stroke, width=28, height=16, highlightthickness=1, highlightbackground="#AAA")
-        self.btn_stroke = ttk.Button(self.grp_stroke, text="선택", command=lambda: self._pick_color(self.var_stroke, self.sw_stroke))
+        self.ent_stroke = ttk.Entry(self.grp_stroke, textvariable=self.var_stroke, width=7)
+        self.sw_stroke = tk.Canvas(self.grp_stroke, width=28, height=16, highlightthickness=1, highlightbackground="#AAA", borderwidth=1)
+        self.btn_stroke = ttk.Button(self.grp_stroke, text="선택", command=lambda: self._pick_color(self.var_stroke, self.sw_stroke), width=5)
         self._pack_color_group(self.grp_stroke, self.lbl_stroke, self.ent_stroke, self.sw_stroke, self.btn_stroke)
         self._update_swatch(self.sw_stroke, self.var_stroke.get())
 
         # 불투명
         self.grp_opacity = ttk.Frame(self.box, padding=0)
         ttk.Label(self.grp_opacity, text="불투명(%)").pack(side="left", padx=(0, 6))
-        self.spin_opacity = ttk.Spinbox(self.grp_opacity, from_=0, to=100, textvariable=self.var_opacity, width=6)
+        self.spin_opacity = ttk.Spinbox(self.grp_opacity, from_=0, to=100, textvariable=self.var_opacity, width=4)
         self.spin_opacity.pack(side="left")
 
         # 스케일
         self.grp_scale = ttk.Frame(self.box, padding=0)
         ttk.Label(self.grp_scale, text="스케일(%)").pack(side="left", padx=(0, 6))
-        self.spin_scale = ttk.Spinbox(self.grp_scale, from_=1, to=50, textvariable=self.var_scale, width=6)
+        self.spin_scale = ttk.Spinbox(self.grp_scale, from_=1, to=50, textvariable=self.var_scale, width=4)
         self.spin_scale.pack(side="left")
 
         # 외곽선 굵기
-        self.grp_stroke_w = ttk.Frame(self.box, padding=0)
+        self.grp_stroke_w = ttk.Frame(self.box, padding=(0, 0))
         ttk.Label(self.grp_stroke_w, text="외곽선 굵기").pack(side="left", padx=(0, 6))
-        self.spin_stroke_w = ttk.Spinbox(self.grp_stroke_w, from_=0, to=20, textvariable=self.var_stroke_w, width=6)
+        self.spin_stroke_w = ttk.Spinbox(self.grp_stroke_w, from_=0, to=20, textvariable=self.var_stroke_w, width=3)
         self.spin_stroke_w.pack(side="left")
 
     def _pack_color_group(self, frame: ttk.Frame, lbl: ttk.Label, ent: ttk.Entry, sw: tk.Canvas, btn: ttk.Button):
         # 그룹 내부 패딩은 최소화(정렬 깨짐 방지)
         lbl.pack(side="left", padx=(0, 6))
-        ent.pack(side="left")
-        sw.pack(side="left", padx=6)
-        btn.pack(side="left", padx=(6, 0))
+        ent.pack(side="left", padx=(0, 2))
+        sw.pack(side="left", padx=8)
+        btn.pack(side="left", padx=(8, 0))
 
     # ──────────────────────────────────────────────────────────────────
     # 반응형 재배치
@@ -185,8 +187,11 @@ class ImageWMEditor(ttk.Frame):
         self.after_idle(self._relayout)
 
     def _relayout(self):
-        # 현재 폭 기준으로 single-row / two-rows 결정
-        w = max(1, self.winfo_width())
+        # 현재 가용 폭 기준으로 single-row / two-rows 결정
+        # ▶ 박스 폭을 우선 사용, 실패 시 자기 폭 폴백
+        w_box = self.box.winfo_width()
+        w_self = self.winfo_width()
+        w = max(1, w_box if w_box > 1 else w_self)
         is_wide_now = (w >= self._wide_breakpoint)
         if is_wide_now == self._is_wide and getattr(self, "_layout_inited", False):
             return
@@ -209,7 +214,13 @@ class ImageWMEditor(ttk.Frame):
             self.grp_opacity.grid  (row=1, column=2, sticky="w", padx=(0, self.PADX_M), pady=pady_mid)
             self.grp_scale.grid    (row=1, column=3, sticky="w", padx=(0, self.PADX_M), pady=pady_mid)
             self.grp_stroke.grid   (row=1, column=4, sticky="w", padx=(0, self.PADX_M), pady=pady_mid, columnspan=1)
-            self.grp_stroke_w.grid (row=1, column=5, sticky="e", padx=(0, self.PADX_L), pady=pady_mid)
+            self.grp_stroke_w.grid (row=1, column=5, sticky="we", padx=(0, self.PADX_L), pady=pady_mid)
+
+            try:
+                self.btns_trailing.grid_configure(row=3, column=5, sticky="e",
+                                                  padx=(0, self.PADX_L), pady=(2, self.PADY))
+            except Exception:
+                pass
 
         else:
             # 2줄:
@@ -221,6 +232,38 @@ class ImageWMEditor(ttk.Frame):
             # 2행 [외곽선색 | 외곽선 굵기]
             self.grp_stroke.grid   (row=2, column=0, sticky="w", padx=(self.PADX_L, self.PADX_M), pady=pady_mid, columnspan=3)
             self.grp_stroke_w.grid (row=2, column=3, sticky="w", padx=(0, self.PADX_L),     pady=pady_mid, columnspan=3)
+
+            try:
+                self.btns_trailing.grid_configure(row=4, column=0, columnspan=6, sticky="e", padx = (self.PADX_L, self.PADX_L), pady = (2, self.PADY))
+            except Exception:
+                pass
+
+    def _apply_responsive_labels(self):
+        w = max(1, self.winfo_width())
+        try:
+            if w < 700:
+                # 초협소: 극단적으로 짧게
+                self.btn_font.configure(text="폰트")
+                self.btn_fill.configure(text="색상")
+                self.btn_stroke.configure(text="색상")
+                self.btn_apply.configure(text="적용")
+                self.btn_clear.configure(text="해제")
+            elif w < 920:
+                # 중간: 기본 축약
+                self.btn_font.configure(text="찾기")
+                self.btn_fill.configure(text="선택")
+                self.btn_stroke.configure(text="선택")
+                self.btn_apply.configure(text="적용")
+                self.btn_clear.configure(text="해제")
+            else:
+                # 넓을 때: 원래 라벨
+                self.btn_font.configure(text="찾기…")
+                self.btn_fill.configure(text="선택")
+                self.btn_stroke.configure(text="선택")
+                self.btn_apply.configure(text="적용")
+                self.btn_clear.configure(text="해제")
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────────────────────────────
     # Swatch / Pickers

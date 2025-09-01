@@ -16,6 +16,7 @@ from ui.options_panel import OptionsPanel
 from ui.post_list import PostList
 from ui.preview_pane import PreviewPane
 from ui.thumb_gallery import ThumbGallery
+import ttkbootstrap as tb
 
 # DnD 지원 루트
 try:
@@ -30,11 +31,18 @@ class MainWindow(BaseTk):
         self.title("게시물 워터마크 & 리사이즈")
         self.geometry("1180x960")
         # 창 너무 작아질 때 하단 상태바가 가려지지 않도록 최소 크기
-        try: self.minsize(1024, 720)
+        try: self.minsize(1180, 720)
         except Exception: pass
 
         self.controller = controller
         self.posts: Dict[str, dict] = {}
+
+        # ttkbootstrap 테마 주입
+        try:
+            self._style.configure("TButton", padding=(10,6))
+            self._style.configure("Treeview.Heading", font=("", 10, "bold"))
+        except Exception: pass
+
 
         self.app_settings = AppSettings.load()
         self._wm_anchor: Tuple[float, float] = tuple(self.app_settings.wm_anchor)
@@ -45,7 +53,7 @@ class MainWindow(BaseTk):
 
         # ── 상단 옵션(출력/워터마크/루트 목록) ───────────────────────────────
         self.header = ttk.Frame(self)
-        self.header.pack(side="top", fill="x", padx=8, pady=(8, 0))
+        self.header.pack(side="top", fill="x", padx=8, pady=(12, 4))
         self._build_header(self.header)
 
         # ── 중간: 좌(게시물+에디터) / 우(프리뷰+썸네일) ─────────────────────
@@ -127,19 +135,22 @@ class MainWindow(BaseTk):
         self.opt.pack(fill="x")
 
         actions = ttk.Frame(parent)
-        actions.pack(fill="x", pady=(6, 0))  # 한 줄 아래, 오른쪽 정렬용 컨테이너
+        actions.pack(fill="x", padx=2, pady=(8, 2))  # 한 줄 아래, 오른쪽 정렬용 컨테이너
 
         right = ttk.Frame(actions)
         right.pack(side="right")  # 오른쪽 붙이기
 
-        self.header_prog = ttk.Progressbar(right, length=360, mode="determinate")
-        self.header_prog.pack(side="left", padx=(0, 8))
+        self.header_prog = ttk.Progressbar(right, length=360, mode="determinate",
+                                           style="info.Horizontal.TProgressbar")
+        self.header_prog.pack(side="left", padx=(0, 10))
 
-        self.btn_start = ttk.Button(right, text="시작 (F5)", command=self.on_start_batch)
-        self.btn_start.pack(side="left", padx=(0, 6))
+        self.btn_start = ttk.Button(right, text="시작 (F5)", command=self.on_start_batch,
+                                    style = "primary.TButton")
+        self.btn_start.pack(side="left", padx=(0, 8))
 
-        self.btn_open = ttk.Button(right, text="출력 폴더 열기 (F6)", command=self._open_output_folder)
-        self.btn_open.pack(side="left")
+        self.btn_open = ttk.Button(right, text="출력 폴더 열기 (F6)", command=self._open_output_folder,
+                                   style = "secondary.TButton")
+        self.btn_open.pack(side="left", padx=(0, 2))
 
         # 단축키 바인딩
         self.bind_all("<F5>", lambda e: self.on_start_batch())
@@ -148,7 +159,7 @@ class MainWindow(BaseTk):
     def _build_middle(self, parent):
         # 전체 가로 분할: 좌(게시물), 우(에디터 + [프리뷰/썸네일])
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        mid.pack(fill="both", expand=True, padx=8, pady=(8, 8))
+        mid.pack(fill="both", expand=True, padx=12, pady=(6, 12))
 
         # ── 왼쪽: 게시물(트리)만 ─────────────────────────
         left_frame = ttk.Frame(mid)
@@ -177,11 +188,11 @@ class MainWindow(BaseTk):
             on_clear=self._on_image_wm_clear
         )
         self.wm_editor.pack(fill="x", expand=False)
-        editor_frame.pack(fill="x", side="top", padx=0, pady=(0, 6))  # ← 딱 붙게, 아래만 약간
+        editor_frame.pack(fill="x", side="top", padx=0, pady=(0, 10))  # ← 딱 붙게, 아래만 약간
 
         # (2) 프리뷰/썸네일만 세로 리사이즈: 여기만 PanedWindow 사용
         stack = ttk.PanedWindow(right_col, orient=tk.VERTICAL)
-        stack.pack(fill="both", expand=True, side="top")
+        stack.pack(fill="both", expand=True, side="top", padx=2, pady=(0, 2))
 
         # 프리뷰
         pre_frame = ttk.Frame(stack)

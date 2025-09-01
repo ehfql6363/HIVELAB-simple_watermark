@@ -39,30 +39,30 @@ class OptionsPanel(ttk.Frame):
 
         # ── 상단: 출력 루트 + 드롭 상태 ─────────────────────────────────────────
         top = ttk.Frame(self)
-        top.pack(fill="x")
+        top.pack(fill="x", padx=4, pady=(0, 4))
 
         out = ttk.Frame(top)
-        out.grid(row=0, column=0, sticky="we", padx=0, pady=(0, 2))
+        out.grid(row=0, column=0, sticky="we", padx=(0, 8), pady=(0, 4))
         out.columnconfigure(1, weight=1)
 
         ttk.Label(out, text="출력 루트:").grid(row=0, column=0, sticky="w")
         self.var_output = tk.StringVar(value="")
         self.ent_output = ttk.Entry(out, textvariable=self.var_output)
         self.ent_output.grid(row=0, column=1, sticky="we", padx=(6, 6))
-        ttk.Button(out, text="찾기…", command=self._browse_output).grid(row=0, column=2, sticky="w")
+        ttk.Button(out, text="찾기…", command=self._browse_output, style="secondary.TButton").grid(row=0, column=2, sticky="w")
 
         info = ttk.Frame(top)
-        info.grid(row=0, column=1, sticky="w")
+        info.grid(row=0, column=1, sticky="w", padx=(0, 8), pady=(0, 4))
         self._lbl_drop = ttk.Label(info, text="드롭한 이미지: 0개", foreground="#666")
         self._lbl_drop.pack(side="left")
-        ttk.Button(info, text="비우기", command=self._clear_dropped).pack(side="left", padx=(8, 0))
+        ttk.Button(info, text="비우기", command=self._clear_dropped, style="secondary.TButton").pack(side="left", padx=(8, 0))
 
         # 출력 루트가 바뀌면 변경 알림
         self.var_output.trace_add("write", lambda *_: self._notify_change())
 
         # ── 타겟 크기 프리셋 + 직접 지정 ───────────────────────────────────────
         size_frame = ttk.Frame(top)
-        size_frame.grid(row=0, column=2, padx=0, pady=(0, 2), sticky="w")
+        size_frame.grid(row=0, column=2, padx=(0, 0), pady=(0, 4), sticky="w")
         ttk.Label(size_frame, text="타겟 크기:").grid(row=0, column=0, sticky="w")
 
         preset = ["원본 그대로"] + [f"{w}x{h}" for (w, h) in DEFAULT_SIZES] + ["직접 지정…"]
@@ -91,10 +91,10 @@ class OptionsPanel(ttk.Frame):
 
         # ── 워터마크/배경 ──────────────────────────────────────────────────────
         mid_split = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        mid_split.pack(fill="both", expand=True, pady=(6, 0))
+        mid_split.pack(fill="both", expand=True, padx=2, pady=(8, 4))
 
         # 왼쪽: 워터마크/배경
-        wm = ttk.LabelFrame(mid_split, text="워터마크(기본: 가운데) · 배경")
+        wm = ttk.LabelFrame(mid_split, text="워터마크(기본: 가운데) · 배경", padding=(8, 6))
         mid_split.add(wm, weight=1)  # 왼쪽 폭 비중
 
         ttk.Label(wm, text="불투명도").grid(row=0, column=0, sticky="e")
@@ -112,21 +112,21 @@ class OptionsPanel(ttk.Frame):
         self.ent_bg = ttk.Entry(wm, textvariable=self.var_bg, width=9)
         self.ent_bg.grid(row=0, column=5, sticky="w")
         self.sw_bg = _make_swatch(wm, self.var_bg.get()); self.sw_bg.grid(row=0, column=6, sticky="w", padx=4)
-        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_bg, self.sw_bg)).grid(row=0, column=7, sticky="w")
+        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_bg, self.sw_bg), style="secondary.TButton").grid(row=0, column=7, sticky="w")
 
         ttk.Label(wm, text="글자색").grid(row=1, column=0, sticky="e", pady=(4, 2))
         self.var_fill = tk.StringVar(value="#000000")
         self.ent_fill = ttk.Entry(wm, textvariable=self.var_fill, width=9)
         self.ent_fill.grid(row=1, column=1, sticky="w", pady=(4, 2))
         self.sw_fill = _make_swatch(wm, self.var_fill.get()); self.sw_fill.grid(row=1, column=2, sticky="w", padx=4)
-        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_fill, self.sw_fill)).grid(row=1, column=3, sticky="w")
+        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_fill, self.sw_fill), style="secondary.TButton").grid(row=1, column=3, sticky="w")
 
         ttk.Label(wm, text="외곽선").grid(row=1, column=4, sticky="e")
         self.var_stroke = tk.StringVar(value="#FFFFFF")
         self.ent_stroke = ttk.Entry(wm, textvariable=self.var_stroke, width=9)
         self.ent_stroke.grid(row=1, column=5, sticky="w")
         self.sw_stroke = _make_swatch(wm, self.var_stroke.get()); self.sw_stroke.grid(row=1, column=6, sticky="w", padx=4)
-        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_stroke, self.sw_stroke)).grid(row=1, column=7, sticky="w")
+        ttk.Button(wm, text="선택…", command=lambda: self._pick_color(self.var_stroke, self.sw_stroke), style="secondary.TButton").grid(row=1, column=7, sticky="w")
 
         ttk.Label(wm, text="외곽선 두께").grid(row=1, column=8, sticky="e")
         self.var_stroke_w = tk.IntVar(value=2)
@@ -138,21 +138,21 @@ class OptionsPanel(ttk.Frame):
         ttk.Entry(wm, textvariable=self.var_font, width=50).grid(
             row=2, column=1, columnspan=5, sticky="we", padx=(0, 4), pady=(4, 4)
         )
-        ttk.Button(wm, text="찾기…", command=self._browse_font).grid(row=2, column=6, sticky="w", pady=(4, 4))
-        ttk.Button(wm, text="지우기", command=self._clear_font).grid(row=2, column=7, sticky="w", pady=(4, 4))
+        ttk.Button(wm, text="찾기…", command=self._browse_font, style="secondary.TButton").grid(row=2, column=6, sticky="w", pady=(4, 4))
+        ttk.Button(wm, text="지우기", command=self._clear_font, style="secondary.TButton").grid(row=2, column=7, sticky="w", pady=(4, 4))
         self.var_font.trace_add("write", lambda *_: self._notify_change())
 
         # ── 루트 목록(루트별 워터마크 텍스트) ──────────────────────────────────
-        roots = ttk.LabelFrame(mid_split, text="루트 목록 (루트별 워터마크 텍스트)")
+        roots = ttk.LabelFrame(mid_split, text="루트 목록 (루트별 워터마크 텍스트)", padding=(6, 6))
         mid_split.add(roots, weight=2)  # 오른쪽이 조금 더 넓게
 
         cols = ("root", "wm_text")
         self.tree = ttk.Treeview(roots, columns=cols, show="headings", height=6)
         self.tree.heading("root", text="루트 경로")
-        self.tree.heading("wm_text", text="워터마크 텍스트(더블 클릭 편집)")
-        self.tree.column("root", width=520)
-        self.tree.column("wm_text", width=260)
-        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        self.tree.heading("wm_text", text="워터마크 텍스트")
+        self.tree.column("root", width=320)
+        self.tree.column("wm_text", width=100)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(4, 4))
 
         scrollbar = ttk.Scrollbar(roots, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scrollbar.set)
@@ -176,19 +176,19 @@ class OptionsPanel(ttk.Frame):
         self.tree.bind("<Delete>", lambda e: self._remove_root())
 
         btns = ttk.Frame(self)
-        btns.pack(fill="x", pady=(0, 6))
+        btns.pack(fill="x", padx=4, pady=(6, 8))
 
         # 왼쪽 스페이서로 버튼 묶음을 오른쪽으로 밀기
         ttk.Frame(btns).pack(side="left", fill="x", expand=True)
 
         # 오른쪽에서부터 역순으로 배치 → 화면상 순서: [루트 추가…][삭제][모두 삭제]
-        btn_all = ttk.Button(btns, text="모두 삭제", command=self._remove_all)
-        btn_all.pack(side="right")
+        btn_all = ttk.Button(btns, text="모두 삭제", command=self._remove_all, style="danger.TButton")
+        btn_all.pack(side="right", padx=(6, 0))
 
-        btn_del = ttk.Button(btns, text="삭제", command=self._remove_root)
+        btn_del = ttk.Button(btns, text="삭제", command=self._remove_root, style="danger.Outline.TButton")
         btn_del.pack(side="right", padx=(6, 0))
 
-        btn_add = ttk.Button(btns, text="루트 추가…", command=self._add_root)
+        btn_add = ttk.Button(btns, text="루트 추가…", command=self._add_root, style="primary.TButton")
         btn_add.pack(side="right", padx=(6, 0))
 
         # 스와치 동기

@@ -41,8 +41,8 @@ class PostList(ttk.Frame):
         style.configure("Treeview", rowheight=26, padding=(2, 2))
         style.configure("Treeview.Heading", padding=(6, 4))
 
-        box = ttk.LabelFrame(self, text="게시물")
-        box.pack(fill="both", expand=True)
+        box = ttk.LabelFrame(self, text="게시물", padding=(8, 6))
+        box.pack(fill="both", expand=True, padx=2, pady=2)
 
         # 트리 + 워터마크 텍스트 열
         cols = ("wm_text",)
@@ -59,16 +59,16 @@ class PostList(ttk.Frame):
         self.tree.heading("wm_text", text="워터마크 텍스트")
         self.tree.column("wm_text", width=240, anchor="w", stretch=True)
 
-        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(6, 6))
 
         sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=sb.set)
         sb.pack(side="right", fill="y")
 
         btns = ttk.Frame(self)
-        btns.pack(fill="x", pady=(0, 6))
-        ttk.Button(btns, text="선택 삭제", command=self.remove_selected).pack(side="left")
-        ttk.Button(btns, text="모두 삭제", command=self.remove_all).pack(side="left", padx=6)
+        btns.pack(fill="x", padx=2, pady=(6, 8))
+        ttk.Button(btns, text="선택 삭제", command=self.remove_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="모두 삭제", command=self.remove_all).pack(side="left")
 
         # 이벤트
         self.tree.bind("<<TreeviewSelect>>", self._on_select)

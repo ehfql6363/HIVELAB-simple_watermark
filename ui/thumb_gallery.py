@@ -170,11 +170,11 @@ class ThumbGallery(ttk.Frame):
             lbl_img.image = tkim
             self._imgs[p] = tkim
             self._img_labels[p] = lbl_img
-            lbl_img.pack(padx=4, pady=(4, 0))
+            lbl_img.pack(padx=4, pady=(6, 2))
 
             # 파일명
             lbl_txt = tk.Label(body, text=p.name, wraplength=size, justify="center", takefocus=0)
-            lbl_txt.pack(padx=4, pady=(2, 0))
+            lbl_txt.pack(padx=4, pady=(4, 2))
 
             # ★ 항상 존재하는 하단 선택 바(높이 3px). 기본은 “투명처럼 보이는” 색.
             sel_bar = tk.Frame(tile, height=3, bg=tile.cget("background"))
