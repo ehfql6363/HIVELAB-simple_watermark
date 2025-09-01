@@ -12,19 +12,25 @@ from typing import Dict, Optional, Tuple
 from controller import AppController
 from settings import AppSettings, DEFAULT_WM_TEXT, hex_to_rgb, RootConfig
 from ui.image_wm_editor import ImageWMEditor
-from ui.options_panel import OptionsPanel
 from ui.post_list import PostList
 from ui.preview_pane import PreviewPane
 from ui.thumb_gallery import ThumbGallery
 import ttkbootstrap as tb
 from ui.scrollframe import ScrollFrame
 
+from ui.root_panel import RootPanel
+from ui.wm_panel import WmPanel
+
+# DnD 지원 루트
 # DnD 지원 루트
 try:
-    from tkinterdnd2 import TkinterDnD  # type: ignore
+    from tkinterdnd2 import TkinterDnD, DND_FILES  # ★ DND_FILES 같이 가져오기
     class BaseTk(TkinterDnD.Tk): ...
+    DND_AVAILABLE = True
 except Exception:
     class BaseTk(tk.Tk): ...
+    DND_AVAILABLE = False
+    DND_FILES = None  # type: ignore
 
 class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
@@ -61,27 +67,89 @@ class MainWindow(BaseTk):
         # ── 중간: 좌(게시물+에디터) / 우(프리뷰+썸네일) ─────────────────────
         self._build_middle(self)
 
-        # ── 하단 상태바 ───────────────────────────────────────────────────
-        # self.status = StatusBar(self, on_start=self.on_start_batch)
-        # self.status.pack(side="bottom", fill="x", padx=8, pady=8)
-
         # 옵션 패널 초기값 채우기
-        self.opt.set_initial_options(self.app_settings)
+        self.wm_panel.set_initial_options(self.app_settings)
+        self.root_panel.set_recent_dir(self.app_settings.last_dir_output_dialog)
 
-        if self.app_settings.output_root and not self.opt.var_output.get().strip():
-            self.opt.var_output.set(str(self.app_settings.output_root))
+        if self.app_settings.output_root and not self.wm_panel.var_output.get().strip():
+            self.wm_panel.var_output.set(str(self.app_settings.output_root))
 
-        if self.app_settings.wm_font_path and not self.opt.var_font.get().strip():
-            self.opt.var_font.set(str(self.app_settings.wm_font_path))
+        if self.app_settings.wm_font_path and not self.wm_panel.var_font.get().strip():
+            self.wm_panel.var_font.set(str(self.app_settings.wm_font_path))
 
         # 최초 옵션 반영 → 루트 변경 감지로 게시물 등록
         self._on_options_changed()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def _collect_ui_options(self):
+        """
+        A/B 패널로부터 현재 UI 상태를 한 번에 수집해
+        기존 (_collect_settings)에서 기대하던 튜플 형태로 반환.
+        """
+        # B패널에서 출력/워터마크/배경/폰트/타겟크기 수집
+        (sizes,
+         bg_hex,
+         wm_opacity,
+         wm_scale,
+         out_root_str,
+         wm_fill_hex,
+         wm_stroke_hex,
+         wm_stroke_w,
+         wm_font_path_str) = self.wm_panel.collect_options()
+
+        # A패널에서 루트 목록
+        roots = self.root_panel.get_roots()
+
+        return (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
+                wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str)
+
+    def _on_global_drop(self, event):
+        # 1) 드롭 항목 파싱
+        try:
+            items = self.tk.splitlist(event.data)
+        except Exception:
+            items = [event.data]
+
+        from services.discovery import IMG_EXTS  # 이미지 확장자 집합
+        paths = []
+        for p in items:
+            p = (p or "").strip()
+            if p:
+                paths.append(Path(p))
+
+        dirs = [p for p in paths if p.is_dir()]
+        files = [p for p in paths if p.is_file() and p.suffix.lower() in IMG_EXTS]
+
+        # 2) 폴더 → A 패널(루트)로
+        for d in dirs:
+            try:
+                self.root_panel.insert_or_update_root(str(d), DEFAULT_WM_TEXT)
+            except Exception:
+                pass
+
+        # 3) 파일(이미지) → B 패널(WmPanel)로
+        if files:
+            try:
+                self.wm_panel.add_dropped_images(files)
+            except Exception:
+                pass
+            # 가상 루트 행 보장
+            try:
+                self.root_panel.ensure_images_row()
+            except Exception:
+                pass
+
+        # 4) 무언가 반영됐다면 옵션 변경 반영
+        if dirs or files:
+            try:
+                self._on_options_changed()
+            except Exception:
+                pass
+
     def _open_output_folder(self):
         # 우선순위: 현재 옵션창 값 → 앱 저장값
-        out_root_str = (self.opt.get_output_root_str() or "").strip()
+        out_root_str = (self.wm_panel.get_output_root_str() or "").strip()
         path = Path(out_root_str) if out_root_str else (self.app_settings.output_root or None)
         if not path:
             messagebox.showinfo("출력 폴더", "출력 루트 폴더를 먼저 지정하세요.")
@@ -183,10 +251,41 @@ class MainWindow(BaseTk):
     # 빌드
     # ──────────────────────────────────────────────────────────────────────
     def _build_header(self, parent: ttk.Frame):
-        self.opt = OptionsPanel(parent, on_change=self._on_options_changed)
-        self.opt.pack(fill="x")
+        # 헤더 한 줄 컨테이너: 세로로는 확장하지 않게(expand=False)
+        header_row = ttk.Frame(parent)
+        header_row.pack(side="top", fill="x", expand=False)
 
-        # 단축키 바인딩
+        # A/B 두 패널을 가로 grid로 배치 (동일 가로 비율)
+        header_row.grid_columnconfigure(0, weight=1, uniform="ab")
+        header_row.grid_columnconfigure(1, weight=1, uniform="ab")
+
+        # ── A: 루트 패널 ─────────────────────────
+        self.root_panel = RootPanel(header_row, on_change=self._on_options_changed)
+        self.root_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 6))
+
+        # ── B: 워터마크/배경 패널 ────────────────
+        self.wm_panel = WmPanel(header_row, on_change=self._on_options_changed)
+        self.wm_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 6))
+
+        if DND_AVAILABLE:
+            try:
+                self.drop_target_register(DND_FILES)  # 최상위 윈도우에 등록
+                self.dnd_bind("<<Drop>>", self._on_global_drop)
+            except Exception:
+                pass
+
+        # 둘 다 같은 최대 높이로 클램프 (원하는 값으로 조절)
+        MAX_HEADER_H = 180
+        try:
+            self.root_panel.set_max_height(MAX_HEADER_H)
+        except Exception:
+            pass
+        try:
+            self.wm_panel.set_max_height(MAX_HEADER_H)
+        except Exception:
+            pass
+
+        # 단축키 바인딩 (기존 유지)
         self.bind_all("<F5>", lambda e: self.on_start_batch())
         self.bind_all("<F6>", lambda e: self._open_output_folder())
 
@@ -419,8 +518,8 @@ class MainWindow(BaseTk):
         return tuple(sig)
 
     def _rebuild_posts_from_roots(self):
-        roots = self.opt.get_roots()
-        dropped = self.opt.get_dropped_images()
+        roots = self.root_panel.get_roots()
+        dropped = self.wm_panel.get_dropped_images()
         self.posts = self.controller.scan_posts_multi(roots, dropped_images=dropped)
 
         # 트리 갱신
@@ -441,8 +540,10 @@ class MainWindow(BaseTk):
 
     def _on_options_changed(self):
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, roots,
-         wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
-        recent_out, recent_font = self.opt.get_recent_dirs()
+         wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self._collect_ui_options()
+
+        # 최근 디렉터리(선택) – WmPanel이 관리한다면 가져와 저장
+        recent_out, recent_font = self.wm_panel.get_recent_dirs()
 
         s = self.app_settings
         s.output_root = Path(out_root_str) if out_root_str else s.output_root
@@ -454,10 +555,12 @@ class MainWindow(BaseTk):
         s.wm_stroke_color = hex_to_rgb(wm_stroke_hex or "#FFFFFF")
         s.wm_stroke_width = int(wm_stroke_w)
         s.wm_font_path = Path(wm_font_path_str) if wm_font_path_str else None
-        if recent_out: s.last_dir_output_dialog = recent_out
+        if recent_out:  s.last_dir_output_dialog = recent_out
         if recent_font: s.last_dir_font_dialog = recent_font
-        try: s.save()
-        except Exception: pass
+        try:
+            s.save()
+        except Exception:
+            pass
 
         # 루트 변경 감지 → 게시물 즉시 반영
         sig = self._roots_signature(roots)
@@ -585,7 +688,7 @@ class MainWindow(BaseTk):
 
     def _collect_settings(self) -> AppSettings:
         (sizes, bg_hex, wm_opacity, wm_scale, out_root_str, _roots,
-         wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self.opt.collect_options()
+         wm_fill_hex, wm_stroke_hex, wm_stroke_w, wm_font_path_str) = self._collect_ui_options()
 
         # 출력 루트 폴백
         if not out_root_str and self.app_settings.output_root:
@@ -744,7 +847,7 @@ class MainWindow(BaseTk):
             messagebox.showinfo("시작", "등록된 게시물이 없습니다.")
             return
 
-        out_root_str = (self.opt.get_output_root_str() or "").strip()
+        out_root_str = (self.wm_panel.get_output_root_str() or "").strip()
         if not out_root_str and self.app_settings.output_root:
             out_root_str = str(self.app_settings.output_root)
         if not out_root_str:
