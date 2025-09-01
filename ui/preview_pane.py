@@ -320,6 +320,8 @@ class PreviewPane(ttk.Frame):
         self._on_apply_all = on_apply_all
         self._placement_mode = tk.StringVar(value="drag")
 
+        self._wm_cfg: Optional[Dict] = None
+
         top = ttk.Frame(self)
         top.pack(fill="x", padx=4, pady=(4, 6))
         self.lbl_left_cap = ttk.Label(top, text="적용", font=("", 10, "bold"))
@@ -382,6 +384,7 @@ class PreviewPane(ttk.Frame):
         return self.canvas_after if self._swapped else self.canvas_before
 
     def set_wm_preview_config(self, cfg: Optional[Dict]):
+        self._wm_cfg = cfg
         self.canvas_before.set_wm_config(cfg)
         self.canvas_after.set_wm_config(cfg)
 
@@ -498,6 +501,11 @@ class PreviewPane(ttk.Frame):
                 self._on_anchor_change(self._anchor_norm)
         else:
             # ✅ 드래그 모드: 적용쪽에서만 드래그 시작
+            if self._wm_cfg is not None:
+                try:
+                    self._apply_canvas().set_wm_config(self._wm_cfg)
+                except Exception:
+                    pass
             if e.widget is not self._apply_canvas():
                 return
             self._dragging = True

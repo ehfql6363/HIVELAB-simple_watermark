@@ -103,27 +103,78 @@ class MainWindow(BaseTk):
 
     def _on_post_wmtext_change(self, post_key: str, value: str):
         """
-        게시물 인라인 편집 반영:
-        - 트리뷰(부모/하위 이미지) 즉시 갱신
-        - 현재 보던 항목이면 프리뷰/에디터도 재계산
+        폴더(B) 인라인 편집 시:
+        - 폴더 텍스트 저장
+        - 모든 하위 이미지의 '텍스트 소스'(개별 인라인/오버라이드 텍스트) 제거 → 전부 상속(폴더 텍스트)로 전환
+        - 리스트/프리뷰 즉시 갱신
         """
-        # 모델에도 반영(안전차원)
-        if post_key in self.posts:
-            self.posts[post_key]["wm_text_edit"] = value
+        meta = self.posts.get(post_key)
+        if not meta:
+            return
 
-        # 트리뷰 표시 즉시 갱신 (부모/하위 이미지 모두)
+        # 1) 폴더(게시물) 편집 값 저장
+        meta["wm_text_edit"] = value
+
+        # 2) 모든 하위 이미지에서 '텍스트 소스' 제거 → 상속(폴더 텍스트)을 따르게
+        files = list(meta.get("files") or [])
+        img_edits = meta.get("img_wm_text_edits") or {}
+        ov_map = meta.get("img_overrides") or {}
+
+        changed_any = False
+
+        for p in files:
+            # 2-A) 이미지 인라인 편집값 제거
+            if p in img_edits:
+                try:
+                    del img_edits[p]
+                    changed_any = True
+                except Exception:
+                    pass
+
+            # 2-B) 오버라이드 중 'text' 키만 제거(불투명도/폰트 등 다른 값은 보존)
+            ov = ov_map.get(p)
+            if isinstance(ov, dict) and "text" in ov:
+                try:
+                    del ov["text"]
+                    changed_any = True
+                    # 텍스트만 지우고 dict가 비면 깔끔히 제거
+                    if not ov:
+                        del ov_map[p]
+                except Exception:
+                    pass
+
+        # 변경 사항을 meta에 반영(비어 있으면 필드 제거)
+        if img_edits:
+            meta["img_wm_text_edits"] = img_edits
+        else:
+            if "img_wm_text_edits" in meta:
+                del meta["img_wm_text_edits"]
+
+        if ov_map:
+            meta["img_overrides"] = ov_map
+        else:
+            if "img_overrides" in meta:
+                del meta["img_overrides"]
+
+        # 3) 트리의 폴더/하위 이미지 표시 텍스트 즉시 갱신
         try:
             self.post_list.refresh_wm_for_post(post_key)
         except Exception:
             pass
 
-        # 프리뷰/에디터 갱신
+        # 4) 현재 보고 있던 이미지가 있으면 에디터/프리뷰 갱신
         try:
             if self._active_src:
-                meta = self.posts.get(post_key) or {}
                 cfg = self._effective_wm_cfg_for(meta, self._active_src)
                 if hasattr(self, "wm_editor") and self.wm_editor:
                     self.wm_editor.set_active_image_and_defaults(self._active_src, cfg)
+                if hasattr(self, "preview") and self.preview:
+                    self.preview.set_wm_preview_config(cfg)
+        except Exception:
+            pass
+
+        # 5) 프리뷰 전체 재생성(원본/적용 모두 새 폴더 텍스트 반영)
+        try:
             self.on_preview()
         except Exception:
             pass
@@ -161,7 +212,7 @@ class MainWindow(BaseTk):
 
         # ── 오른쪽: 스크롤 가능한 컬럼 ──
         right_scroll = ScrollFrame(mid)
-        mid.add(right_scroll, weight=6)
+        mid.add(right_scroll, weight=8)
         right_col = right_scroll.inner
 
         # (1) 개별 이미지 워터마크 에디터
@@ -175,7 +226,7 @@ class MainWindow(BaseTk):
         editor_frame.pack(fill="x", side="top", padx=0, pady=(0, 8))
 
         # (2) 프리뷰/썸네일 Paned(V)  → tk.PanedWindow 사용
-        MIN_PREVIEW, MIN_GALLERY = 360, 200
+        MIN_PREVIEW, MIN_GALLERY = 500, 200
 
         stack = tk.PanedWindow(right_col, orient="vertical")  # ★ tk.PanedWindow
         stack.pack(fill="both", expand=True, side="top")
@@ -242,25 +293,31 @@ class MainWindow(BaseTk):
         self.btn_open.pack(side="right")
 
     def _effective_wm_text_for(self, meta: dict, path: Path | None) -> str:
-        """이미지/게시물/루트/앱설정 순으로 워터마크 텍스트 결정."""
-        # 1) 이미지 개별 텍스트
+        """이미지/게시물/루트/앱설정 순으로 워터마크 텍스트 결정.
+           ✨ 이미지 수준이 있으면 그게 최우선, 그 다음 폴더 인라인."""
+        # (A) 이미지 오버라이드의 text
+        if path is not None:
+            ov_map = meta.get("img_overrides") or {}
+            ov = ov_map.get(path) or {}
+            if "text" in ov:
+                return (ov.get("text") or "").strip()
+
+        # (B) 이미지 인라인 편집 텍스트
         if path is not None:
             img_edits = meta.get("img_wm_text_edits") or {}
             if path in img_edits:
                 return (img_edits[path] or "").strip()
 
-        # 2) 게시물 인라인 편집 텍스트
-        edited = (meta.get("wm_text_edit") or "").strip()
-        if edited != "":
-            return edited  # 빈문자면 '없음' 취지로 그대로 빈값 유지
+        # (C) 폴더 인라인 편집(키 존재 여부로 판단, 빈문자 포함 존중)
+        if "wm_text_edit" in meta:
+            return (meta.get("wm_text_edit") or "").strip()
 
-        # 3) 루트 설정 (""이면 '없음')
+        # (D) 루트 설정(없으면 앱 기본)
         root = meta["root"]
         raw = getattr(root, "wm_text", None)
         if raw is None:
-            # None → 앱 기본
             return (self.app_settings.default_wm_text or "").strip()
-        return raw.strip()  # "" 허용(없음)
+        return (raw or "").strip()  # "" 허용(없음)
 
     def _effective_wm_cfg_for(self, meta: dict, path: Path | None) -> dict | None:
         """프리뷰/에디터에 내려줄 풀 옵션 딕셔너리(없음이면 None)."""
@@ -559,22 +616,18 @@ class MainWindow(BaseTk):
     def _resolve_wm_text_for_list(self, meta: dict) -> str:
         """
         게시물 레벨 표시 텍스트:
-        - meta["wm_text_edit"]가 있으면 우선
-        - 없으면 root.wm_text (빈문자 ""면 '없음' 취지로 빈 처리)
-        - 둘 다 없으면 settings.default_wm_text
+        ✨ wm_text_edit 키가 있으면 그 값을 그대로(빈 문자열 포함) 사용
         """
+        if "wm_text_edit" in meta:
+            return (meta.get("wm_text_edit") or "").strip()
+
         root = meta["root"]
-        edited = (meta.get("wm_text_edit") or "").strip()
-        if edited != "":
-            return edited
         raw = root.wm_text
         if raw is None:
-            # None → 기본 텍스트 사용
             return (self.app_settings.default_wm_text or "").strip()
-        raw = raw.strip()
+        raw = (raw or "").strip()
         if raw == "":
-            # 빈 문자열 → “워터마크 없음”
-            return ""
+            return ""  # 빈 문자열 → “워터마크 없음”
         return raw
 
     # ──────────────────────────────────────────────────────────────────────

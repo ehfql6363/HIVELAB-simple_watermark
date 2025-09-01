@@ -41,6 +41,10 @@ class OptionsPanel(ttk.Frame):
         top = ttk.Frame(self)
         top.pack(fill="x", padx=4, pady=(0, 4))
 
+        top.grid_columnconfigure(0, weight=0)
+        top.grid_columnconfigure(1, weight=0)
+        top.grid_columnconfigure(2, weight=1)
+
         out = ttk.Frame(top)
         out.grid(row=0, column=0, sticky="we", padx=(0, 8), pady=(0, 4))
         out.columnconfigure(1, weight=1)
@@ -61,29 +65,52 @@ class OptionsPanel(ttk.Frame):
         self.var_output.trace_add("write", lambda *_: self._notify_change())
 
         # ── 타겟 크기 프리셋 + 직접 지정 ───────────────────────────────────────
-        size_frame = ttk.Frame(top)
-        size_frame.grid(row=0, column=2, padx=(0, 0), pady=(0, 4), sticky="w")
-        ttk.Label(size_frame, text="타겟 크기:").grid(row=0, column=0, sticky="w")
+        # ── 타겟 크기 프리셋 + 직접 지정 + (오른쪽) 루트 액션 버튼들 ─────────────────
+        sizes_bar = ttk.Frame(top)
+        sizes_bar.grid(row=0, column=2, padx=(0, 0), pady=(0, 4), sticky="we")
+        sizes_bar.grid_columnconfigure(0, weight=1)  # ⬅ 왼쪽 칸(가변)
+        sizes_bar.grid_columnconfigure(1, weight=0)  # ⬅ 오른쪽 칸(내용폭)
+
+        # 왼쪽: 타겟 크기 컨트롤
+        size_left = ttk.Frame(sizes_bar)
+        size_left.grid(row=0, column=0, sticky="w")
+
+        ttk.Label(size_left, text="타겟 크기:").grid(row=0, column=0, sticky="w")
 
         preset = ["원본 그대로"] + [f"{w}x{h}" for (w, h) in DEFAULT_SIZES] + ["직접 지정…"]
         self.var_size = tk.StringVar(value=preset[0])
-        self.cb_size = ttk.Combobox(size_frame, textvariable=self.var_size, values=preset,
+        self.cb_size = ttk.Combobox(size_left, textvariable=self.var_size, values=preset,
                                     width=12, state="readonly")
         self.cb_size.grid(row=0, column=1, sticky="w")
-        self.cb_size.bind("<<ComboboxSelected>>", lambda e: (self._refresh_custom_size_state(), self._notify_change()))
+        self.cb_size.bind("<<ComboboxSelected>>",
+                          lambda e: (self._refresh_custom_size_state(), self._notify_change()))
 
         # 직접 지정 가로/세로
         self.var_custom_w = tk.IntVar(value=1080)
         self.var_custom_h = tk.IntVar(value=1080)
-        ttk.Label(size_frame, text=" ").grid(row=0, column=2, sticky="w")  # 약간의 간격
-        self.sp_w = ttk.Spinbox(size_frame, from_=32, to=10000, width=6, textvariable=self.var_custom_w,
+        ttk.Label(size_left, text=" ").grid(row=0, column=2, sticky="w")  # 약간 간격
+        self.sp_w = ttk.Spinbox(size_left, from_=32, to=10000, width=6, textvariable=self.var_custom_w,
                                 command=self._notify_change, state="disabled")
-        self.sp_x = ttk.Label(size_frame, text="x")
-        self.sp_h = ttk.Spinbox(size_frame, from_=32, to=10000, width=6, textvariable=self.var_custom_h,
+        self.sp_x = ttk.Label(size_left, text="x")
+        self.sp_h = ttk.Spinbox(size_left, from_=32, to=10000, width=6, textvariable=self.var_custom_h,
                                 command=self._notify_change, state="disabled")
         self.sp_w.grid(row=0, column=3, sticky="w", padx=(0, 2))
         self.sp_x.grid(row=0, column=4, sticky="w")
         self.sp_h.grid(row=0, column=5, sticky="w", padx=(2, 0))
+
+        # 오른쪽: 루트 액션 버튼(우측 정렬)
+        root_actions = ttk.Frame(sizes_bar)
+        root_actions.grid(row=0, column=1, sticky="e")
+
+        self.btn_root_add = ttk.Button(root_actions, text="루트 추가…", command=self._add_root, style="primary.TButton")
+        self.btn_root_del = ttk.Button(root_actions, text="삭제", command=self._remove_root,
+                                       style="danger.Outline.TButton")
+        self.btn_root_clear = ttk.Button(root_actions, text="모두 삭제", command=self._remove_all, style="danger.TButton")
+
+        # 오른쪽부터 차례대로 붙이면 시각 순서는 [루트 추가…][삭제][모두 삭제]
+        self.btn_root_clear.pack(side="right")
+        self.btn_root_del.pack(side="right", padx=(6, 6))
+        self.btn_root_add.pack(side="right", padx=(6, 0))
 
         # 사용자가 숫자 타이핑해도 반영
         self.var_custom_w.trace_add("write", lambda *_: self._notify_change())
@@ -96,6 +123,9 @@ class OptionsPanel(ttk.Frame):
         # 왼쪽: 워터마크/배경
         wm = ttk.LabelFrame(mid_split, text="워터마크(기본: 가운데) · 배경", padding=(8, 6))
         mid_split.add(wm, weight=1)  # 왼쪽 폭 비중
+
+        for col in (1, 2, 3, 4, 5):
+            wm.grid_columnconfigure(col, weight=1)
 
         ttk.Label(wm, text="불투명도").grid(row=0, column=0, sticky="e")
         self.var_wm_opacity = tk.IntVar(value=30)
@@ -174,22 +204,6 @@ class OptionsPanel(ttk.Frame):
 
         self.tree.bind("<Double-1>", self._on_tree_double_click)
         self.tree.bind("<Delete>", lambda e: self._remove_root())
-
-        btns = ttk.Frame(self)
-        btns.pack(fill="x", padx=4, pady=(6, 8))
-
-        # 왼쪽 스페이서로 버튼 묶음을 오른쪽으로 밀기
-        ttk.Frame(btns).pack(side="left", fill="x", expand=True)
-
-        # 오른쪽에서부터 역순으로 배치 → 화면상 순서: [루트 추가…][삭제][모두 삭제]
-        btn_all = ttk.Button(btns, text="모두 삭제", command=self._remove_all, style="danger.TButton")
-        btn_all.pack(side="right", padx=(6, 0))
-
-        btn_del = ttk.Button(btns, text="삭제", command=self._remove_root, style="danger.Outline.TButton")
-        btn_del.pack(side="right", padx=(6, 0))
-
-        btn_add = ttk.Button(btns, text="루트 추가…", command=self._add_root, style="primary.TButton")
-        btn_add.pack(side="right", padx=(6, 0))
 
         # 스와치 동기
         self.var_bg.trace_add("write", lambda *_: self._update_swatch(self.sw_bg, self.var_bg.get()))

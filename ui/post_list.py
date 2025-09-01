@@ -138,30 +138,50 @@ class PostList(ttk.Frame):
 
     # ---------- 유틸 ----------
 
+    # post_list.py
+
     def refresh_wm_for_post(self, post_key: str):
-        """post_key에 해당하는 트리의 표시 텍스트를 즉시 다시 채운다.
-        - 게시물(폴더) 행 1개
-        - 그 하위의 모든 이미지 행
+        """post_key와 관련된 트리의 워터마크 텍스트 표시를 강제 재계산/갱신한다.
+        - 게시물(폴더) 행 1개(있을 때)
+        - 그 하위의 모든 이미지 행(부모가 누구든 pk가 일치하면 모두)
         """
         meta = self._posts_ref.get(post_key)
         if not meta:
             return
 
-        for iid, (typ, item) in self._iid_to_item.items():
-            if typ == "post" and item == post_key:
-                # 게시물(폴더) 행
-                try:
-                    self.tree.set(iid, "wm_text", self.resolve_wm(meta))
-                except Exception:
-                    pass
-            elif typ == "image":
-                pk, path = item
-                if pk == post_key:
-                    # 하위 이미지 행
+        # 1) 게시물(폴더) 행 갱신 (있으면)
+        try:
+            for iid, (typ, item) in self._iid_to_item.items():
+                if typ == "post" and item == post_key:
+                    # 폴더 행의 데이터 컬럼(#1/"wm_text") 갱신
                     try:
-                        self.tree.set(iid, "wm_text", self.resolve_img_wm(meta, path))
+                        self.tree.set(iid, "wm_text", self.resolve_wm(meta))
                     except Exception:
                         pass
+                    break
+        except Exception:
+            pass
+
+        # 2) 이 post_key에 속한 '모든' 이미지 행을 전역 매핑에서 찾아 갱신
+        try:
+            for iid, (typ, item) in list(self._iid_to_item.items()):
+                if typ != "image":
+                    continue
+                pk, path = item  # (post_key, Path)
+                if pk != post_key:
+                    continue
+                try:
+                    self.tree.set(iid, "wm_text", self.resolve_img_wm(meta, path))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 3) 즉시 리프레시(지연반영/포커스 전환 기다리지 않도록)
+        try:
+            self.tree.update_idletasks()
+        except Exception:
+            pass
 
     def _get_item(self, iid: str) -> Tuple[str, ItemKey] | None:
         return self._iid_to_item.get(iid)
@@ -369,11 +389,32 @@ class PostList(ttk.Frame):
                 typ, key = item
                 if typ == "post":
                     post_key = key  # str
-                    # 모델에 저장 (호출 측에서 settings/메모리 반영 추천)
+                    # 모델에 저장
                     if post_key in self._posts_ref:
-                        self._posts_ref[post_key]["wm_text_edit"] = val
+                        meta = self._posts_ref[post_key]
+                        meta["wm_text_edit"] = val  # 빈 문자열 포함 그대로 저장
+
+                        # ⬇⬇ 추가: 폴더 텍스트가 바뀌면 하위 이미지 개별 텍스트 초기화
+                        # 1) 인라인 텍스트 편집 맵 제거
+                        imgs_map = meta.get("img_wm_text_edits")
+                        if imgs_map:
+                            imgs_map.clear()
+                            meta["img_wm_text_edits"] = {}
+
+                        # 2) 오버라이드에 들어있던 'text' 키 제거(다른 옵션은 보존)
+                        ov_map = meta.get("img_overrides") or {}
+                        for p, ov in list(ov_map.items()):
+                            if isinstance(ov, dict) and "text" in ov:
+                                ov.pop("text", None)
+
                     if callable(self.on_wmtext_change):
                         self.on_wmtext_change(post_key, val)
+
+                    # 트리뷰 즉시 리프레시
+                    try:
+                        self.refresh_wm_for_post(post_key)
+                    except Exception:
+                        pass
                 else:
                     post_key, path = key
                     meta = self._posts_ref.get(post_key)
