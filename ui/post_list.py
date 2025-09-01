@@ -550,6 +550,11 @@ class PostList(ttk.Frame):
             #       "자식 텍스트 소스 삭제" 로직이 다시 실행될 수 있음.
             #       되돌리기 목적상, 여기서는 콜백을 부르지 않는 편이 안전합니다.
             #       (필요시 MainWindow에 'silent' 플래그 추가해 확장 가능)
+            # ✅ 되돌린 뒤 해당 게시물로 포커스
+            try:
+                self._select_post_or_first_image(post_key)
+            except Exception:
+                pass
 
         elif typ == "image":
             post_key = rec.get("post_key")
@@ -583,3 +588,37 @@ class PostList(ttk.Frame):
                     self.on_image_wmtext_change(post_key, path, imgs_map.get(path, ""))
                 except Exception:
                     pass
+
+            # ✅ 되돌린 뒤 해당 게시물로 포커스
+            try:
+                self._select_post_or_first_image(post_key)
+            except Exception:
+                pass
+
+    def _select_post_or_first_image(self, post_key: str):
+        """post_key의 게시물 노드를 선택하되, 게시물 노드가 없으면
+        해당 post_key의 첫 번째 이미지 행을 선택한다."""
+        # 1) 게시물 노드 찾기
+        for iid, (typ, item) in self._iid_to_item.items():
+            if typ == "post" and item == post_key:
+                try:
+                    self.tree.selection_set(iid)
+                    self.tree.see(iid)
+                    # 선택 이벤트 트리거 → 우측 프리뷰/에디터 싱크
+                    self.event_generate("<<TreeviewSelect>>")
+                except Exception:
+                    pass
+                return
+
+        # 2) 게시물 노드가 없다면(자기자신 게시물 등) 첫 이미지 선택
+        for iid, (typ, item) in self._iid_to_item.items():
+            if typ == "image":
+                pk, _p = item
+                if pk == post_key:
+                    try:
+                        self.tree.selection_set(iid)
+                        self.tree.see(iid)
+                        self.event_generate("<<TreeviewSelect>>")
+                    except Exception:
+                        pass
+                    return
