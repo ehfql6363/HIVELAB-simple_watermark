@@ -171,6 +171,25 @@ class AppController:
             "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
         }
 
+        pov = meta.get("post_overrides") or {}
+        if "font_path" in pov and str(pov["font_path"]).strip():
+            base["font_path"] = str(pov["font_path"]).strip()
+        if "scale" in pov:
+            base["scale_pct"] = int(pov["scale"])
+        if "opacity" in pov:
+            base["opacity"] = int(pov["opacity"])
+        if "fill" in pov and str(pov["fill"]).strip():
+            # HEX → RGB 로직은 기존에 elsewhere에서도 쓰므로 통일: settings.hex_to_rgb 없으면 직접 파싱
+            s = pov["fill"].lstrip("#")
+            if len(s) == 3: s = "".join(c * 2 for c in s)
+            base["fill"] = (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+        if "stroke" in pov and str(pov["stroke"]).strip():
+            s = pov["stroke"].lstrip("#")
+            if len(s) == 3: s = "".join(c * 2 for c in s)
+            base["stroke"] = (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+        if "stroke_w" in pov:
+            base["stroke_w"] = int(pov["stroke_w"])
+
         # ---- 2) 텍스트 우선순위
         final_text: Optional[str] = None
 
@@ -185,6 +204,11 @@ class AppController:
             img_edits = meta.get("img_wm_text_edits") or {}
             if src in img_edits:
                 final_text = (img_edits[src] or "").strip()
+
+        # 2.5) 게시물 오버라이드 텍스트
+        if final_text is None:
+            if (pov.get("text") or "").strip():
+                final_text = pov["text"].strip()
 
         # 3) 게시물 인라인 편집
         if final_text is None and ("wm_text_edit" in meta):

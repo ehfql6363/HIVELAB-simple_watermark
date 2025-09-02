@@ -20,8 +20,8 @@ from ui.scrollframe import ScrollFrame
 
 from ui.root_panel import RootPanel
 from ui.wm_panel import WmPanel
+from ui.post_inspector import PostInspector
 
-# DnD 지원 루트
 # DnD 지원 루트
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES  # ★ DND_FILES 같이 가져오기
@@ -298,8 +298,14 @@ class MainWindow(BaseTk):
         left_frame = ttk.Frame(mid)
         mid.add(left_frame, weight=1)
 
+        # 왼쪽을 세로 분할: 위(PostList) / 아래(PostInspector)
+        left_split = ttk.PanedWindow(left_frame, orient=tk.VERTICAL)
+        left_split.pack(fill="both", expand=True)
+
+        # (위) PostList
+        postlist_holder = ttk.Frame(left_split)
         self.post_list = PostList(
-            left_frame,
+            postlist_holder,
             on_select=self.on_select_post,
             resolve_wm=self._resolve_wm_text_for_list,
             resolve_img_wm=self._resolve_img_wm_text_for_list,
@@ -308,6 +314,55 @@ class MainWindow(BaseTk):
             on_image_select=self._on_postlist_image_select,
         )
         self.post_list.pack(fill="both", expand=True)
+        left_split.add(postlist_holder, weight=3)
+
+        # (아래) PostInspector
+        def _on_post_overrides_change(post_key: str, overrides: dict):
+            meta = self.posts.get(post_key)
+            if meta is None:
+                return
+            if overrides:
+                meta["post_overrides"] = overrides
+            else:
+                meta.pop("post_overrides", None)
+            # 목록/프리뷰 갱신
+            try:
+                self.post_list.refresh_wm_for_post(post_key)
+            except Exception:
+                pass
+            try:
+                self.on_preview()
+            except Exception:
+                pass
+
+        def _on_apply_all_images(post_key: str):
+            meta = self.posts.get(post_key)
+            if not meta:
+                return
+            text = (meta.get("post_overrides", {}).get("text") or "").strip()
+            if not text:
+                return
+            imgs_map = meta.get("img_wm_text_edits") or {}
+            for p in (meta.get("files") or []):
+                imgs_map[p] = text
+            meta["img_wm_text_edits"] = imgs_map
+            try:
+                self.post_list.refresh_wm_for_post(post_key)
+            except Exception:
+                pass
+            try:
+                self.on_preview()
+            except Exception:
+                pass
+
+        inspector_holder = ttk.Frame(left_split)
+        self.post_inspector = PostInspector(
+            inspector_holder,
+            on_change=_on_post_overrides_change,
+            on_apply_all=_on_apply_all_images,
+        )
+        self.post_inspector.pack(fill="x", expand=False)
+        left_split.add(inspector_holder, weight=2)
 
         # ── 오른쪽: 스크롤 가능한 컬럼 ──
         right_scroll = ScrollFrame(mid)
@@ -447,23 +502,34 @@ class MainWindow(BaseTk):
     def _resolve_img_wm_text_for_list(self, meta: dict, path: Path) -> str:
         """
         이미지 레벨 표시 텍스트:
-        - 개별 오버라이드(text)가 있으면 최우선
-        - 그다음 인라인 편집(meta["img_wm_text_edits"][path])
-        - 없으면 게시물/루트/앱 기본
+        우선순위: 이미지 오버라이드(text) > 이미지 인라인 > post_overrides > wm_text_edit > 루트/앱 기본
         """
-        # 1순위: 오버라이드의 text
+        # 1) 이미지 오버라이드
         ov_map = meta.get("img_overrides") or {}
         ov = ov_map.get(path) or {}
         if "text" in ov:
             return (ov.get("text") or "").strip()
 
-        # 2순위: 이미지 인라인 편집 텍스트
+        # 2) 이미지 인라인
         img_edits = meta.get("img_wm_text_edits") or {}
         if path in img_edits:
             return (img_edits[path] or "").strip()
 
-        # 기본
-        return self._resolve_wm_text_for_list(meta)
+        # 3) 게시물 오버라이드
+        pov = meta.get("post_overrides") or {}
+        if (pov.get("text") or "").strip():
+            return pov["text"].strip()
+
+        # 4) 게시물 인라인
+        if "wm_text_edit" in meta:
+            return (meta.get("wm_text_edit") or "").strip()
+
+        # 5) 루트/앱 기본
+        root = meta["root"]
+        raw = root.wm_text
+        if raw is None:
+            return (self.app_settings.default_wm_text or "").strip()
+        return (raw or "").strip()
 
     def _on_image_wmtext_change(self, post_key: str, path: Path, value: str):
         """
@@ -583,6 +649,12 @@ class MainWindow(BaseTk):
         files = meta.get("files", [])
         default_anchor = tuple(meta.get("anchor") or self.app_settings.wm_anchor)
         img_map = meta.get("img_anchors") or {}
+
+        try:
+            self.post_inspector.bind_post(key, (self.posts.get(key) or {}).get("post_overrides"))
+        except Exception:
+            pass
+
         self.gallery.set_files(files, default_anchor=default_anchor, img_anchor_map=img_map)
         self.gallery.set_active(None)
         self._wm_anchor = default_anchor
@@ -719,8 +791,13 @@ class MainWindow(BaseTk):
     def _resolve_wm_text_for_list(self, meta: dict) -> str:
         """
         게시물 레벨 표시 텍스트:
-        ✨ wm_text_edit 키가 있으면 그 값을 그대로(빈 문자열 포함) 사용
+        우선순위: post_overrides > wm_text_edit > 루트/앱 기본
         """
+        ov = meta.get("post_overrides") or {}
+        txt = (ov.get("text") or "").strip()
+        if txt:
+            return txt
+
         if "wm_text_edit" in meta:
             return (meta.get("wm_text_edit") or "").strip()
 
