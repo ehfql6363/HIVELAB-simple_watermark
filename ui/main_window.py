@@ -172,76 +172,41 @@ class MainWindow(BaseTk):
     def _on_post_wmtext_change(self, post_key: str, value: str):
         """
         폴더(B) 인라인 편집 시:
-        - 폴더 텍스트 저장
-        - 모든 하위 이미지의 '텍스트 소스'(개별 인라인/오버라이드 텍스트) 제거 → 전부 상속(폴더 텍스트)로 전환
+        - '가장 최근 수정 우선' 규칙에 따라 게시물 텍스트만 최신 rev로 저장
+        - 하위 이미지의 기존 값은 건드리지 않음(삭제 금지)
         - 리스트/프리뷰 즉시 갱신
         """
         meta = self.posts.get(post_key)
         if not meta:
             return
 
-        # 1) 폴더(게시물) 편집 값 저장
-        meta["wm_text_edit"] = value
+        # 1) 게시물 텍스트를 최신 rev로 기록 (빈 문자열도 '의도된 최신값'으로 인정)
+        self.controller.set_post_overrides(post_key, {"text": value})
 
-        # 2) 모든 하위 이미지에서 '텍스트 소스' 제거 → 상속(폴더 텍스트)을 따르게
-        files = list(meta.get("files") or [])
-        img_edits = meta.get("img_wm_text_edits") or {}
-        ov_map = meta.get("img_overrides") or {}
-
-        changed_any = False
-
-        for p in files:
-            # 2-A) 이미지 인라인 편집값 제거
-            if p in img_edits:
-                try:
-                    del img_edits[p]
-                    changed_any = True
-                except Exception:
-                    pass
-
-            # 2-B) 오버라이드 중 'text' 키만 제거(불투명도/폰트 등 다른 값은 보존)
-            ov = ov_map.get(p)
-            if isinstance(ov, dict) and "text" in ov:
-                try:
-                    del ov["text"]
-                    changed_any = True
-                    # 텍스트만 지우고 dict가 비면 깔끔히 제거
-                    if not ov:
-                        del ov_map[p]
-                except Exception:
-                    pass
-
-        # 변경 사항을 meta에 반영(비어 있으면 필드 제거)
-        if img_edits:
-            meta["img_wm_text_edits"] = img_edits
-        else:
-            if "img_wm_text_edits" in meta:
-                del meta["img_wm_text_edits"]
-
-        if ov_map:
-            meta["img_overrides"] = ov_map
-        else:
-            if "img_overrides" in meta:
-                del meta["img_overrides"]
-
-        # 3) 트리의 폴더/하위 이미지 표시 텍스트 즉시 갱신
+        # 2) 트리 표시 즉시 갱신
         try:
             self.post_list.refresh_wm_for_post(post_key)
         except Exception:
             pass
 
-        # 4) 현재 보고 있던 이미지가 있으면 에디터/프리뷰 갱신
+        # 3) 현재 보고 있던 이미지가 있으면 해당 이미지의 최신 병합 cfg로 에디터/프리뷰 동기화
         try:
-            if self._active_src:
+            if getattr(self, "_active_src", None):
                 cfg = self._effective_wm_cfg_for(meta, self._active_src)
-                if hasattr(self, "wm_editor") and self.wm_editor:
-                    self.wm_editor.set_active_image_and_defaults(self._active_src, cfg)
-                if hasattr(self, "preview") and self.preview:
-                    self.preview.set_wm_preview_config(cfg)
+                if getattr(self, "wm_editor", None):
+                    try:
+                        self.wm_editor.set_active_image_and_defaults(self._active_src, cfg)
+                    except Exception:
+                        pass
+                if getattr(self, "preview", None):
+                    try:
+                        self.preview.set_wm_preview_config(cfg)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
-        # 5) 프리뷰 전체 재생성(원본/적용 모두 새 폴더 텍스트 반영)
+        # 4) 전체 프리뷰 재생성
         try:
             self.on_preview()
         except Exception:
@@ -289,6 +254,65 @@ class MainWindow(BaseTk):
         self.bind_all("<F5>", lambda e: self.on_start_batch())
         self.bind_all("<F6>", lambda e: self._open_output_folder())
 
+    def _on_list_toggle_wm_mode(self, items: list[tuple[str, object]], mode: str):
+        """
+        mode: 'empty' | 'restore'
+        - empty  : 선택 항목의 텍스트를 강제로 ""로 설정
+        - restore: 선택 항목의 텍스트를 루트/글로벌 기본값으로 설정
+        (스타일은 건드리지 않음)
+        """
+        affected_posts: set[str] = set()
+
+        # 루트 → 그 루트의 모든 게시물로 확장
+        expanded: list[tuple[str, object]] = []
+        for typ, key in items:
+            if typ == "root":
+                root_key = str(key)
+                for pk, meta in (self.posts or {}).items():
+                    try:
+                        rc = meta.get("root")
+                        if rc and str(rc.path) == root_key:
+                            expanded.append(("post", pk))
+                    except Exception:
+                        pass
+            else:
+                expanded.append((typ, key))
+
+        for typ, key in expanded:
+            if typ == "post":
+                post_key = key  # str
+                meta = (self.posts or {}).get(post_key)
+                if not meta:
+                    continue
+                if mode == "empty":
+                    self.controller.set_post_overrides(post_key, {"text": ""})
+                else:
+                    base = self._base_text_from_root_global(meta)
+                    self.controller.set_post_overrides(post_key, {"text": base})
+                affected_posts.add(post_key)
+
+            elif typ == "image":
+                post_key, path = key
+                meta = (self.posts or {}).get(post_key)
+                if not meta:
+                    continue
+                if mode == "empty":
+                    self.controller.set_image_override(post_key, path, "text", "")
+                else:
+                    base = self._base_text_from_root_global(meta)
+                    self.controller.set_image_override(post_key, path, "text", base)
+                affected_posts.add(post_key)
+
+        for pk in affected_posts:
+            try:
+                self.post_list.refresh_wm_for_post(pk)
+            except Exception:
+                pass
+        try:
+            self.on_preview()
+        except Exception:
+            pass
+
     def _build_middle(self, parent):
         # 좌우 분할
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
@@ -312,20 +336,21 @@ class MainWindow(BaseTk):
             on_wmtext_change=self._on_post_wmtext_change,
             on_image_wmtext_change=self._on_image_wmtext_change,
             on_image_select=self._on_postlist_image_select,
+            on_toggle_wm=self._on_list_toggle_wm,
+            on_toggle_wm_mode=self._on_list_toggle_wm_mode
         )
+
         self.post_list.pack(fill="both", expand=True)
         left_split.add(postlist_holder, weight=3)
 
         # (아래) PostInspector
         def _on_post_overrides_change(post_key: str, overrides: dict):
-            meta = self.posts.get(post_key)
-            if meta is None:
-                return
             if overrides:
-                meta["post_overrides"] = overrides
+                self.controller.set_post_overrides(post_key, overrides)
             else:
-                meta.pop("post_overrides", None)
-            # 목록/프리뷰 갱신
+                # ⬇ settings 전달
+                self.controller.reset_post_scope(post_key, self.app_settings)
+
             try:
                 self.post_list.refresh_wm_for_post(post_key)
             except Exception:
@@ -339,13 +364,13 @@ class MainWindow(BaseTk):
             meta = self.posts.get(post_key)
             if not meta:
                 return
-            text = (meta.get("post_overrides", {}).get("text") or "").strip()
-            if not text:
-                return
-            imgs_map = meta.get("img_wm_text_edits") or {}
+            # 현재 '최신 병합 텍스트'를 각 이미지 text로 복사(이미지마다 새 rev 발행)
             for p in (meta.get("files") or []):
-                imgs_map[p] = text
-            meta["img_wm_text_edits"] = imgs_map
+                cfg = self.controller.resolve_wm_config(meta, self.app_settings, p)
+                txt = "" if not cfg else (cfg.get("text", "") or "")
+                self.controller.set_image_override(post_key, p, "text", txt)
+
+            self.controller.apply_post_text_to_all_images(post_key)
             try:
                 self.post_list.refresh_wm_for_post(post_key)
             except Exception:
@@ -360,6 +385,7 @@ class MainWindow(BaseTk):
             inspector_holder,
             on_change=_on_post_overrides_change,
             on_apply_all=_on_apply_all_images,
+            default_font_path=str(self.app_settings.wm_font_path or "")
         )
         self.post_inspector.pack(fill="x", expand=False)
         left_split.add(inspector_holder, weight=2)
@@ -446,110 +472,138 @@ class MainWindow(BaseTk):
         self.btn_open = ttk.Button(btnbar, text="출력 폴더 열기 (F6)", command=self._open_output_folder)
         self.btn_open.pack(side="right")
 
+    def _base_text_from_root_global(self, meta: dict) -> str:
+        """루트 wm_text가 있으면 그것, 없으면 글로벌 default_wm_text."""
+        try:
+            root = meta.get("root")
+            rtxt = getattr(root, "wm_text", None) if root is not None else None
+            base = (rtxt if rtxt is not None else self.app_settings.default_wm_text) or ""
+            return str(base).strip()
+        except Exception:
+            return ""
+
+    def _on_list_toggle_wm(self, items: list[tuple[str, object]]):
+        """
+        멀티 선택된 루트/게시물/이미지의 워터마크 텍스트를
+        - 현재 보이는 값이 비어있지 않으면 => '비우기'
+        - 현재 보이는 값이 비어있으면     => '복원(루트/글로벌 기본 텍스트)'
+        로 토글한다. (스타일은 건드리지 않음)
+        """
+        if not items:
+            return
+
+        affected_posts: set[str] = set()
+
+        # 1) 루트 선택은 내부의 게시물들로 확장
+        expanded: list[tuple[str, object]] = []
+        for typ, key in items:
+            if typ == "root":
+                root_key = str(key)  # root_key is a path string
+                # 이 루트에 속한 게시물 모두 수집
+                for pk, meta in (self.posts or {}).items():
+                    try:
+                        rc = meta.get("root")
+                        if rc and str(rc.path) == root_key:
+                            expanded.append(("post", pk))
+                    except Exception:
+                        pass
+            else:
+                expanded.append((typ, key))
+
+        # 2) 실제 토글 처리
+        for typ, key in expanded:
+            if typ == "post":
+                post_key = key  # str
+                meta = (self.posts or {}).get(post_key)
+                if not meta:
+                    continue
+                # 현재 게시물의 '효과 텍스트'(이미지 아님)
+                cfg = self.controller.resolve_wm_config(meta, self.app_settings, None)
+                cur_text = "" if cfg is None else (cfg.get("text", "") or "")
+                if cur_text.strip() != "":
+                    # 비우기: 게시물 오버라이드 text를 ""로
+                    self.controller.set_post_overrides(post_key, {"text": ""})
+                else:
+                    # 복원: 루트/글로벌 기본 텍스트를 게시물 오버라이드로 설정(최신 rev로 승리)
+                    base_text = self._base_text_from_root_global(meta)
+                    self.controller.set_post_overrides(post_key, {"text": base_text})
+                affected_posts.add(post_key)
+
+            elif typ == "image":
+                post_key, path = key  # (str, Path)
+                meta = (self.posts or {}).get(post_key)
+                if not meta:
+                    continue
+                cfg = self.controller.resolve_wm_config(meta, self.app_settings, path)
+                cur_text = "" if cfg is None else (cfg.get("text", "") or "")
+                if cur_text.strip() != "":
+                    # 비우기: 이미지 오버라이드 text=""
+                    self.controller.set_image_override(post_key, path, "text", "")
+                else:
+                    # 복원: 루트/글로벌 기본 텍스트로 이미지 text를 설정 (최신 rev)
+                    base_text = self._base_text_from_root_global(meta)
+                    self.controller.set_image_override(post_key, path, "text", base_text)
+                affected_posts.add(post_key)
+
+        # 3) UI 갱신
+        for pk in affected_posts:
+            try:
+                self.post_list.refresh_wm_for_post(pk)
+            except Exception:
+                pass
+        try:
+            self.on_preview()
+        except Exception:
+            pass
+
     def _effective_wm_text_for(self, meta: dict, path: Path | None) -> str:
-        """이미지/게시물/루트/앱설정 순으로 워터마크 텍스트 결정.
-           ✨ 이미지 수준이 있으면 그게 최우선, 그 다음 폴더 인라인."""
-        # (A) 이미지 오버라이드의 text
-        if path is not None:
-            ov_map = meta.get("img_overrides") or {}
-            ov = ov_map.get(path) or {}
-            if "text" in ov:
-                return (ov.get("text") or "").strip()
-
-        # (B) 이미지 인라인 편집 텍스트
-        if path is not None:
-            img_edits = meta.get("img_wm_text_edits") or {}
-            if path in img_edits:
-                return (img_edits[path] or "").strip()
-
-        # (C) 폴더 인라인 편집(키 존재 여부로 판단, 빈문자 포함 존중)
-        if "wm_text_edit" in meta:
-            return (meta.get("wm_text_edit") or "").strip()
-
-        # (D) 루트 설정(없으면 앱 기본)
-        root = meta["root"]
-        raw = getattr(root, "wm_text", None)
-        if raw is None:
-            return (self.app_settings.default_wm_text or "").strip()
-        return (raw or "").strip()  # "" 허용(없음)
+        cfg = self.controller.resolve_wm_config(meta, self.app_settings, path)
+        return "" if cfg is None else (cfg.get("text", "") or "")
 
     def _effective_wm_cfg_for(self, meta: dict, path: Path | None) -> dict | None:
-        """프리뷰/에디터에 내려줄 풀 옵션 딕셔너리(없음이면 None)."""
-        txt = self._effective_wm_text_for(meta, path)
-        s = self._collect_settings()  # 현재 UI 값
-
-        base = {
-            "text": (txt or "").strip(),
-            "opacity": int(s.wm_opacity),
-            "scale_pct": int(s.wm_scale_pct),
-            "fill": tuple(s.wm_fill_color),
-            "stroke": tuple(s.wm_stroke_color),
-            "stroke_w": int(s.wm_stroke_width),
-            "font_path": str(s.wm_font_path) if s.wm_font_path else "",
-        }
-
-        # ★ 이미지 개별 오버라이드 반영
-        if path is not None:
-            img_ov = (meta.get("img_overrides") or {}).get(path) or {}
-            if img_ov:
-                base.update(img_ov)
-
-        # 최종 텍스트가 ""이면 '워터마크 없음'
-        if (base.get("text") or "").strip() == "":
-            return None
-        return base
+        return self.controller.resolve_wm_config(meta, self.app_settings, path)
 
     def _resolve_img_wm_text_for_list(self, meta: dict, path: Path) -> str:
-        """
-        이미지 레벨 표시 텍스트:
-        우선순위: 이미지 오버라이드(text) > 이미지 인라인 > post_overrides > wm_text_edit > 루트/앱 기본
-        """
-        # 1) 이미지 오버라이드
-        ov_map = meta.get("img_overrides") or {}
-        ov = ov_map.get(path) or {}
-        if "text" in ov:
-            return (ov.get("text") or "").strip()
-
-        # 2) 이미지 인라인
-        img_edits = meta.get("img_wm_text_edits") or {}
-        if path in img_edits:
-            return (img_edits[path] or "").strip()
-
-        # 3) 게시물 오버라이드
-        pov = meta.get("post_overrides") or {}
-        if (pov.get("text") or "").strip():
-            return pov["text"].strip()
-
-        # 4) 게시물 인라인
-        if "wm_text_edit" in meta:
-            return (meta.get("wm_text_edit") or "").strip()
-
-        # 5) 루트/앱 기본
-        root = meta["root"]
-        raw = root.wm_text
-        if raw is None:
-            return (self.app_settings.default_wm_text or "").strip()
-        return (raw or "").strip()
+        cfg = self.controller.resolve_wm_config(meta, self.app_settings, path)
+        return "" if cfg is None else (cfg.get("text", "") or "")
 
     def _on_image_wmtext_change(self, post_key: str, path: Path, value: str):
         """
         이미지 인라인 편집 반영:
-        - 현재 그 이미지를 보고 있으면, 에디터/프리뷰 즉시 갱신
+        - 해당 이미지의 text를 최신 rev로 저장
+        - 에디터/리스트/프리뷰 즉시 갱신
         """
-        if not self.posts:
-            return
         meta = self.posts.get(post_key)
         if not meta:
             return
 
-        if self._active_src == path:
-            cfg = self._effective_wm_cfg_for(meta, path)
-            if hasattr(self, "wm_editor"):
-                try:
-                    self.wm_editor.set_active_image_and_defaults(path, cfg)
-                except Exception:
-                    pass
-        # 프리뷰 갱신
+        # 1) 이미지 텍스트를 최신 rev로 기록 (빈 문자열도 '없앰' 의도로 최신 처리)
+        self.controller.set_image_override(post_key, path, "text", value)
+
+        # 2) 현재 이 이미지를 보고 있으면 최신 병합 cfg로 에디터/프리뷰 동기화
+        try:
+            if getattr(self, "_active_src", None) == path:
+                cfg = self._effective_wm_cfg_for(meta, path)
+                if getattr(self, "wm_editor", None):
+                    try:
+                        self.wm_editor.set_active_image_and_defaults(path, cfg)
+                    except Exception:
+                        pass
+                if getattr(self, "preview", None):
+                    try:
+                        self.preview.set_wm_preview_config(cfg)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 3) 트리 표시 갱신 (해당 게시물의 이미지 텍스트들)
+        try:
+            self.post_list.refresh_wm_for_post(post_key)
+        except Exception:
+            pass
+
+        # 4) 프리뷰 갱신
         try:
             self.on_preview()
         except Exception:
@@ -587,6 +641,7 @@ class MainWindow(BaseTk):
         roots = self.root_panel.get_roots()
         dropped = self.wm_panel.get_dropped_images()
         self.posts = self.controller.scan_posts_multi(roots, dropped_images=dropped)
+        self.controller.attach_posts(self.posts)
 
         # 트리 갱신
         self.post_list.set_posts(self.posts)
@@ -789,26 +844,8 @@ class MainWindow(BaseTk):
         )
 
     def _resolve_wm_text_for_list(self, meta: dict) -> str:
-        """
-        게시물 레벨 표시 텍스트:
-        우선순위: post_overrides > wm_text_edit > 루트/앱 기본
-        """
-        ov = meta.get("post_overrides") or {}
-        txt = (ov.get("text") or "").strip()
-        if txt:
-            return txt
-
-        if "wm_text_edit" in meta:
-            return (meta.get("wm_text_edit") or "").strip()
-
-        root = meta["root"]
-        raw = root.wm_text
-        if raw is None:
-            return (self.app_settings.default_wm_text or "").strip()
-        raw = (raw or "").strip()
-        if raw == "":
-            return ""  # 빈 문자열 → “워터마크 없음”
-        return raw
+        cfg = self.controller.resolve_wm_config(meta, self.app_settings, None)
+        return "" if cfg is None else (cfg.get("text", "") or "")
 
     # ──────────────────────────────────────────────────────────────────────
     # 앵커 변경/적용/해제
@@ -878,42 +915,27 @@ class MainWindow(BaseTk):
         key = self.post_list.get_selected_post()
         if not key or key not in self.posts:
             return
-        meta = self.posts[key]
-        overrides = meta.setdefault("img_overrides", {})
-        overrides[path] = ov
 
-        # 썸네일 배지/앵커 오버레이 즉시 갱신
+        for k, v in (ov or {}).items():
+            self.controller.set_image_override(key, path, k, v)
         self._refresh_gallery_overlay(key)
-
-        # 리스트의 표시 텍스트 갱신(함수가 있다면 호출)
-        if hasattr(self.post_list, "refresh_wm_for_post"):
-            try:
-                self.post_list.refresh_wm_for_post(key)
-            except Exception:
-                pass
-
-        # 프리뷰 재생성
+        try:
+            self.post_list.refresh_wm_for_post(key)
+        except Exception:
+            pass
         self.on_preview()
 
     def _on_image_wm_clear(self, path: Path):
         key = self.post_list.get_selected_post()
         if not key or key not in self.posts:
             return
-        meta = self.posts[key]
-        overrides = meta.get("img_overrides") or {}
+
+        self.controller.clear_image_overrides(key, path)
+        self._refresh_gallery_overlay(key)
         try:
-            del overrides[path]
+            self.post_list.refresh_wm_for_post(key)
         except Exception:
             pass
-
-        # 동기화 갱신
-        self._refresh_gallery_overlay(key)
-        if hasattr(self.post_list, "refresh_wm_for_post"):
-            try:
-                self.post_list.refresh_wm_for_post(key)
-            except Exception:
-                pass
-
         self.on_preview()
 
     # ──────────────────────────────────────────────────────────────────────

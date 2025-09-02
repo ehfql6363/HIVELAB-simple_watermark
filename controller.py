@@ -34,14 +34,196 @@ class AppController:
         # ✅ 프리뷰 최대 긴 변(원본 그대로일 때도 화면용으로 다운스케일)
         self._max_preview_side = 1400
 
+        self._rev = 0
+        self._posts_ref: Dict[str, dict] | None = None
+
     # ---------- 내부 유틸 ----------
-    # def _filename_for(self, src: Path, w: int, h: int) -> str:
-    #     """
-    #     크기 지정 시 파일명에 _{WxH} 태그를 붙여 다중 크기 저장 시 충돌 방지.
-    #     원본 크기(0,0)일 땐 태그 생략.
-    #     """
-    #     size_tag = "" if (w, h) == (0, 0) else f"_{w}x{h}"
-    #     return f"{src.stem}{size_tag}_wm.jpg"
+    def attach_posts(self, posts: Dict[str, dict]) -> None:
+        """MainWindow가 소유한 posts 딕셔너리를 컨트롤러에 연결해 둔다."""
+        self._posts_ref = posts
+
+    def _next_rev(self) -> int:
+        self._rev += 1
+        return self._rev
+
+    @staticmethod
+    def _to_rgb(value):
+        """#RRGGBB / (r,g,b) / [r,g,b] → (r,g,b) 정규화."""
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            return (int(value[0]), int(value[1]), int(value[2]))
+        s = str(value or "").strip()
+        if not s:
+            return (0, 0, 0)
+        if s.startswith("#"):
+            s = s[1:]
+        if len(s) == 3:
+            s = "".join(c * 2 for c in s)
+        try:
+            return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+        except Exception:
+            return (0, 0, 0)
+
+    def set_post_overrides(self, post_key: str, changes: dict | None):
+        """
+        게시물 단위 오버라이드 저장 (필드별 latest-wins rev 부여).
+        changes 가 빈 dict/None 이면 오버라이드 제거.
+        허용 필드: text, font_path, scale(=scale_pct), opacity, fill, stroke, stroke_w
+        """
+        posts = self._posts_ref or {}
+        meta = posts.get(post_key)
+        if not meta:
+            return
+        if not changes:
+            meta.pop("post_overrides", None)
+            meta.pop("post_overrides_rev", None)
+            return
+
+        po = meta.setdefault("post_overrides", {})
+        pr = meta.setdefault("post_overrides_rev", {})
+        for k, v in changes.items():
+            if k in ("fill", "stroke"):
+                v = self._to_rgb(v)
+            if k == "scale":
+                k = "scale_pct"
+            po[k] = v
+            pr[k] = self._next_rev()
+
+    def clear_post_overrides(self, post_key: str):
+        posts = self._posts_ref or {}
+        meta = posts.get(post_key)
+        if not meta:
+            return
+        meta.pop("post_overrides", None)
+        meta.pop("post_overrides_rev", None)
+
+    def set_image_override(self, post_key: str, path, field: str, value):
+        posts = self._posts_ref or {}
+        meta = posts.get(post_key)
+        if not meta:
+            return
+        io = meta.setdefault("img_overrides", {})
+        ir = meta.setdefault("img_overrides_rev", {})
+        img_o = io.setdefault(path, {})
+        img_r = ir.setdefault(path, {})
+
+        if field in ("fill", "stroke") and value is not None:
+            value = self._to_rgb(value)
+        if field == "scale":
+            field = "scale_pct"
+
+        if value is None:
+            img_o.pop(field, None)
+            img_r.pop(field, None)
+            if not img_o:
+                io.pop(path, None)
+                ir.pop(path, None)
+        else:
+            img_o[field] = value
+            img_r[field] = self._next_rev()
+
+        # ☆ 사용자가 개별 텍스트를 손대면, 더 이상 "게시물에서 뿌린 텍스트"가 아님
+        if field == "text":
+            m = meta.get("img_text_from_post_rev")
+            if isinstance(m, dict) and path in m:
+                m.pop(path, None)
+                if not m:
+                    meta.pop("img_text_from_post_rev", None)
+
+    def clear_image_overrides(self, post_key: str, path):
+        posts = self._posts_ref or {}
+        meta = posts.get(post_key)
+        if not meta:
+            return
+        io = meta.get("img_overrides") or {}
+        ir = meta.get("img_overrides_rev") or {}
+        io.pop(path, None)
+        ir.pop(path, None)
+        if not io:
+            meta.pop("img_overrides", None)
+        if not ir:
+            meta.pop("img_overrides_rev", None)
+
+    def reset_post_scope(self, post_key: str, settings) -> None:
+        """
+        게시물 옵션 초기화(롤백):
+        - 게시물 오버라이드 제거
+        - 각 이미지에 '설정 전(글로벌/루트 기본값)'을 명시적으로 다시 써주되,
+          rev는 새로 크게 발급하여 최신-우선 규칙에서 이기게 함.
+        - 적용 필드: text, font_path, scale_pct, fill, stroke, stroke_w
+        - 레거시 인라인 텍스트/마커는 정리
+        """
+        posts = self._posts_ref or {}
+        meta = posts.get(post_key)
+        if not meta:
+            return
+
+        # 0) 롤백 기준값(설정 전): 루트/글로벌에서 계산
+        root = meta.get("root")
+        base_text = ""
+        try:
+            root_text = getattr(root, "wm_text", None) if root is not None else None
+            base_text = (root_text if root_text is not None else settings.default_wm_text) or ""
+            base_text = str(base_text).strip()
+        except Exception:
+            pass
+
+        base = {
+            "text": base_text,
+            "font_path": str(getattr(settings, "wm_font_path", "") or ""),
+            "scale_pct": int(getattr(settings, "wm_scale_pct", 18)),
+            "fill": tuple(getattr(settings, "wm_fill_color", (0, 0, 0))),
+            "stroke": tuple(getattr(settings, "wm_stroke_color", (255, 255, 255))),
+            "stroke_w": int(getattr(settings, "wm_stroke_width", 2)),
+        }
+
+        # 1) 게시물 오버라이드 제거
+        meta.pop("post_overrides", None)
+        meta.pop("post_overrides_rev", None)
+
+        # 2) 레거시 인라인/마커 정리
+        meta.pop("img_wm_text_edits", None)
+        meta.pop("img_text_from_post_rev", None)
+
+        # 3) 각 이미지에 '롤백 기본값'을 새 rev로 강제 적용 (텍스트/폰트/스케일/색)
+        files = list(meta.get("files") or [])
+        for p in files:
+            # 텍스트
+            self.set_image_override(post_key, p, "text", base["text"])
+            # 폰트
+            self.set_image_override(post_key, p, "font_path", base["font_path"])
+            # 스케일
+            self.set_image_override(post_key, p, "scale_pct", base["scale_pct"])
+            # 색상 (글자색/외곽선/굵기/불투명)
+            self.set_image_override(post_key, p, "fill", base["fill"])
+            self.set_image_override(post_key, p, "stroke", base["stroke"])
+            self.set_image_override(post_key, p, "stroke_w", base["stroke_w"])
+            self.set_image_override(post_key, p, "opacity", int(getattr(settings, "wm_opacity", 60)))
+
+
+    def apply_post_text_to_all_images(self, post_key: str):
+        """게시물 오버라이드의 text를 모든 이미지에 복사하고, 출처 rev를 마킹."""
+        posts = self._posts_ref or {}
+        meta = posts.get(post_key)
+        if not meta:
+            return
+
+        po = meta.get("post_overrides") or {}
+        pr = meta.get("post_overrides_rev") or {}
+        text = (po.get("text") or "").strip()
+        if text == "":
+            return
+        post_text_rev = int(pr.get("text", self._rev))
+
+        files = list(meta.get("files") or [])
+        if not files:
+            return
+
+        mark = meta.setdefault("img_text_from_post_rev", {})
+        for p in files:
+            # 텍스트 복사(이미지별 새 rev 발행)
+            self.set_image_override(post_key, p, "text", text)
+            # 출처 rev 기록
+            mark[p] = post_text_rev
 
     def _filename_for(self, src: Path, w: int, h: int) -> str:
         size_tag = "" if (w, h) == (0, 0) else f"_{w}x{h}"
@@ -148,84 +330,106 @@ class AppController:
             return (int(round(w * (m / h))), int(m))
 
     # ---------- 설정 병합 ----------
-    # controller.py
-
     def resolve_wm_config(self, meta: dict, settings: AppSettings, src: Optional[Path]) -> Optional[dict]:
         """
-        최종 워터마크 설정 병합 (배치/미리보기 공용):
-        우선순위 (text 기준)
-          1) 이미지 개별 오버라이드 img_overrides[src]["text"] (있으면 최우선)
-          2) 이미지 인라인 편집 meta["img_wm_text_edits"][src]
-          3) 게시물 인라인 편집 meta["wm_text_edit"]
-          4) 루트/앱 기본(self._resolve_wm_text)
-        text == "" 이면 '워터마크 없음' → None 반환
-        나머지 키들(fill/stroke/…​)은 img_overrides가 있으면 해당 키만 덮어씀
+        최신-우선(latest-wins) 병합.
+        각 필드(text, font_path, scale_pct, opacity, fill, stroke, stroke_w)에 대해
+        이미지/게시물/루트/전역의 'rev'를 비교하여 가장 최근 rev의 value를 채택.
+        - 전역 settings: rev=-2
+        - 루트 text(없으면 전역 text): rev=-1 (text만)
+        - 레거시 인라인(meta["img_wm_text_edits"], meta["wm_text_edit"]): rev=0 (text만)
+        - 게시물/이미지 오버라이드: 저장된 rev 사용
+        텍스트가 ""(빈문자)면 워터마크 없음 → None 반환.
         """
-        # ---- 1) 기본값(현재 UI/설정) 준비
-        base = {
-            "opacity": settings.wm_opacity,
-            "scale_pct": settings.wm_scale_pct,
-            "fill": settings.wm_fill_color,
-            "stroke": settings.wm_stroke_color,
-            "stroke_w": settings.wm_stroke_width,
+        # 0) 전역 기본값 (rev=-2)
+        g = {
+            "text": (settings.default_wm_text or "").strip(),
             "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
+            "scale_pct": int(settings.wm_scale_pct),
+            "opacity": int(settings.wm_opacity),
+            "fill": tuple(settings.wm_fill_color),
+            "stroke": tuple(settings.wm_stroke_color),
+            "stroke_w": int(settings.wm_stroke_width),
         }
+        g_rev = {k: -2 for k in g.keys()}
 
-        pov = meta.get("post_overrides") or {}
-        if "font_path" in pov and str(pov["font_path"]).strip():
-            base["font_path"] = str(pov["font_path"]).strip()
-        if "scale" in pov:
-            base["scale_pct"] = int(pov["scale"])
-        if "opacity" in pov:
-            base["opacity"] = int(pov["opacity"])
-        if "fill" in pov and str(pov["fill"]).strip():
-            # HEX → RGB 로직은 기존에 elsewhere에서도 쓰므로 통일: settings.hex_to_rgb 없으면 직접 파싱
-            s = pov["fill"].lstrip("#")
-            if len(s) == 3: s = "".join(c * 2 for c in s)
-            base["fill"] = (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
-        if "stroke" in pov and str(pov["stroke"]).strip():
-            s = pov["stroke"].lstrip("#")
-            if len(s) == 3: s = "".join(c * 2 for c in s)
-            base["stroke"] = (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
-        if "stroke_w" in pov:
-            base["stroke_w"] = int(pov["stroke_w"])
+        # 1) 루트 텍스트 (rev=-1, text만)
+        root = meta.get("root")
+        if root is not None:
+            root_text = getattr(root, "wm_text", None)
+            if root_text is None:
+                root_text = g["text"]
+            r_text = (root_text or "").strip()
+        else:
+            r_text = g["text"]
+        r_rev = -1
 
-        # ---- 2) 텍스트 우선순위
-        final_text: Optional[str] = None
+        # 2) 게시물 오버라이드
+        po = meta.get("post_overrides") or {}
+        pr = meta.get("post_overrides_rev") or {}
 
-        # 1) 이미지 오버라이드 우선 (text가 명시되어 있으면 그 값을 그대로 사용)
-        ov_all = meta.get("img_overrides") or {}
-        ov_for_img = ov_all.get(src) or {} if src is not None else {}
-        if "text" in ov_for_img:
-            final_text = (ov_for_img.get("text") or "").strip()
+        # 3) 이미지 오버라이드
+        if src is not None:
+            io_all = meta.get("img_overrides") or {}
+            ir_all = meta.get("img_overrides_rev") or {}
+            io = io_all.get(src) or {}
+            ir = ir_all.get(src) or {}
+        else:
+            io, ir = {}, {}
 
-        # 2) 이미지 인라인 편집
-        if final_text is None and src is not None:
-            img_edits = meta.get("img_wm_text_edits") or {}
-            if src in img_edits:
-                final_text = (img_edits[src] or "").strip()
+        # 4) 레거시 인라인(항상 rev=0) — text만
+        legacy_img_text = None
+        if src is not None:
+            imgs_map = meta.get("img_wm_text_edits") or {}
+            if src in imgs_map:
+                legacy_img_text = (imgs_map[src] or "").strip()
+        legacy_post_text = (meta.get("wm_text_edit") or "").strip() if ("wm_text_edit" in meta) else None
 
-        # 2.5) 게시물 오버라이드 텍스트
-        if final_text is None:
-            if (pov.get("text") or "").strip():
-                final_text = pov["text"].strip()
+        # 필드별 후보를 rev와 함께 모아 선택
+        def choose(field, is_text=False):
+            candidates = []
+            # 전역
+            candidates.append((g[field], g_rev[field], 5))  # tie-break idx
 
-        # 3) 게시물 인라인 편집
-        if final_text is None and ("wm_text_edit" in meta):
-            final_text = (meta.get("wm_text_edit") or "").strip()
+            # 루트(text만)
+            if is_text:
+                candidates.append((r_text, r_rev, 4))
 
-        # 4) 루트/앱 기본
-        if final_text is None:
-            rc: RootConfig = meta["root"]
-            final_text = self._resolve_wm_text(rc, settings).strip()
+            # 게시물 오버라이드
+            if field in po:
+                candidates.append((po[field], int(pr.get(field, 0)), 2))
 
-        # 빈문자면 '없음'
-        if final_text == "":
+            # 이미지 오버라이드
+            if field in io:
+                candidates.append((io[field], int(ir.get(field, 0)), 1))
+
+            # 레거시 인라인(text만)
+            if is_text:
+                if legacy_img_text is not None:
+                    candidates.append((legacy_img_text, 0, 0))  # 이미지 인라인
+                if legacy_post_text is not None:
+                    candidates.append((legacy_post_text, 0, 3))
+
+            # rev 최대 → 동률이면 tie-break가 낮은 것
+            best_val, best_rev, best_tb = None, -9999, 99
+            for val, rev, tb in candidates:
+                if rev > best_rev or (rev == best_rev and tb < best_tb):
+                    best_val, best_rev, best_tb = val, rev, tb
+            return best_val
+
+        text = choose("text", is_text=True)
+        if (text or "").strip() == "":
             return None
 
-        # ---- 3) 나머지 키 병합 (개별 오버라이드에 있는 키만 덮어쓰기)
-        cfg = {**base, **{k: v for k, v in ov_for_img.items() if k != "text"}}
-        cfg["text"] = final_text
+        cfg = {
+            "text": (text or "").strip(),
+            "font_path": str(choose("font_path") or ""),
+            "scale_pct": int(choose("scale_pct")),
+            "opacity": int(choose("opacity")),
+            "fill": tuple(choose("fill")),
+            "stroke": tuple(choose("stroke")),
+            "stroke_w": int(choose("stroke_w")),
+        }
         return cfg
 
     # ---------- 스캔 ----------

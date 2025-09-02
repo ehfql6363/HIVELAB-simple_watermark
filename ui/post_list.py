@@ -19,6 +19,8 @@ class PostList(ttk.Frame):
         on_wmtext_change: Optional[Callable[[str, str], None]] = None,      # 게시물 편집 반영
         on_image_wmtext_change: Optional[Callable[[str, Path, str], None]] = None,  # 이미지 편집 반영
         on_image_select: Optional[Callable[[str, Path], None]] = None,      # 이미지 행 선택 시 알림(선택)
+        on_toggle_wm: Optional[Callable[[list[Tuple[str, ItemKey]]], None]] = None,
+        on_toggle_wm_mode: Optional[Callable[[list[Tuple[str, ItemKey]], str], None]] = None,
     ):
         super().__init__(master)
         self.on_select = on_select
@@ -28,6 +30,8 @@ class PostList(ttk.Frame):
         self.on_wmtext_change = on_wmtext_change
         self.on_image_wmtext_change = on_image_wmtext_change
         self.on_image_select = on_image_select
+        self.on_toggle_wm = on_toggle_wm
+        self.on_toggle_wm_mode = on_toggle_wm_mode
 
         self._posts_ref: Dict[str, dict] = {}
         self._root_nodes: Dict[str, str] = {}   # root_key -> iid
@@ -57,7 +61,7 @@ class PostList(ttk.Frame):
             columns=cols,
             show="tree headings",
             height=10,
-            selectmode="browse"
+            selectmode="extended"
         )
 
         try:
@@ -104,10 +108,52 @@ class PostList(ttk.Frame):
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.tree.bind(seq, lambda e: (self.after_idle(self._refresh_wm_entries)), add="+")
 
+        # 버튼바
         btns = ttk.Frame(self)
         btns.pack(fill="x", padx=2, pady=(6, 8))
         ttk.Button(btns, text="선택 삭제", command=self.remove_selected).pack(side="left", padx=(0, 6))
-        ttk.Button(btns, text="모두 삭제", command=self.remove_all).pack(side="left")
+
+        # --- 상태형 토글 (ON=비우기 / OFF=복원) ---
+        self._mode_var = tk.BooleanVar(value=False)  # True=비우기, False=복원
+
+        def _apply_mode_toggle():
+            # 현재 선택 항목들을 모아 외부 콜백으로 전달
+            sel = list(self.tree.selection())
+            if not sel or not callable(self.on_toggle_wm_mode):
+                return
+            items: list[Tuple[str, ItemKey]] = []
+            for iid in sel:
+                it = self._get_item(iid)
+                if it:
+                    items.append(it)
+            mode = "empty" if self._mode_var.get() else "restore"
+            try:
+                self.on_toggle_wm_mode(items, mode)
+            finally:
+                # 외부 적용 후 현재 내용에 맞춰 토글 상태를 다시 동기화
+                self.after_idle(self._sync_toggle_ui_for_selection)
+
+        # ttkbootstrap가 있으면 멋진 토글, 없으면 순정 ttk 대체
+        try:
+            import ttkbootstrap as tb
+            self._wm_toggle = tb.Checkbutton(
+                btns,
+                text="비우기 / 복원",
+                variable=self._mode_var,
+                bootstyle="round-toggle",
+                command=_apply_mode_toggle,
+            )
+        except Exception:
+            self._wm_toggle = ttk.Checkbutton(
+                btns,
+                text="비우기 / 복원",
+                variable=self._mode_var,
+                command=_apply_mode_toggle,
+                style="Toolbutton",
+                takefocus=False
+            )
+        ttk.Button(btns, text="모두 삭제", command=self.remove_all).pack(side="left", padx=(0, 6))
+        self._wm_toggle.pack(side="left")
 
         # 이벤트
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
@@ -123,6 +169,89 @@ class PostList(ttk.Frame):
         root.bind_all("<Command-z>", lambda e: (self._do_undo(e) if self._focus_in_me() else None), add="+")
 
     # ---------- 데이터 채우기 ----------
+    def _current_text_for_item(self, iid: str) -> str:
+        """현재 iid 항목의 표시 텍스트(실제 효과값)를 가져온다."""
+        # 이미 있는 헬퍼: resolve_wm/resolve_img_wm을 이용하는 _get_raw_wm_for_iid 재사용
+        try:
+            return (self._get_raw_wm_for_iid(iid) or "").strip()
+        except Exception:
+            return ""
+
+    def _sync_toggle_ui_for_selection(self, *_):
+        """
+        선택된 항목들의 현재 텍스트를 보고 토글 외형을 자동 맞춘다.
+        - 전부 비어있으면 ON
+        - 전부 비어있지 않으면 OFF
+        - 섞여 있으면 OFF + alternate 상태
+        (기본 상태는 OFF)
+        """
+        sel = list(self.tree.selection())
+        if not sel:
+            # 기본 OFF, 혼합 해제
+            self._mode_var.set(False)
+            try:
+                self._wm_toggle.state(["!alternate"])
+            except Exception:
+                pass
+            return
+
+        empties = 0
+        for iid in sel:
+            if self._current_text_for_item(iid) == "":
+                empties += 1
+
+        if empties == len(sel):
+            # 모두 비어있음 → ON
+            self._mode_var.set(True)
+            try:
+                self._wm_toggle.state(["!alternate"])
+            except Exception:
+                pass
+        elif empties == 0:
+            # 모두 비어있지 않음 → OFF
+            self._mode_var.set(False)
+            try:
+                self._wm_toggle.state(["!alternate"])
+            except Exception:
+                pass
+        else:
+            # 혼합 → OFF + alternate(회색/세 번째 상태 느낌)
+            self._mode_var.set(False)
+            try:
+                self._wm_toggle.state(["alternate"])
+            except Exception:
+                pass
+
+    def _toggle_selected_wm(self):
+        """선택된 항목(복수 가능)의 워터마크 텍스트를 비우거나 복원하는 토글 요청을 외부로 전달."""
+        sel = list(self.tree.selection())
+        if not sel:
+            return
+        items: list[Tuple[str, ItemKey]] = []
+        for iid in sel:
+            it = self._get_item(iid)
+            if it:
+                items.append(it)  # ('root', root_key) | ('post', post_key) | ('image', (post_key, Path))
+        if items and callable(self.on_toggle_wm):
+            try:
+                self.on_toggle_wm(items)
+            except Exception:
+                pass
+
+    def _select_row_from_overlay(self, iid: str):
+        """워터마크 오버레이 위젯에서 클릭했을 때, 트리 선택을 동기화한다."""
+        try:
+            # 조상 펼치기 + 해당 행 보이기
+            self._ensure_visible(iid)
+            # 선택/포커스 갱신
+            self.tree.selection_set(iid)
+            self.tree.focus(iid)
+            self.tree.see(iid)
+            # 선택 이벤트 트리거 (우측 패널/프리뷰 등과 싱크)
+            self.event_generate("<<TreeviewSelect>>")
+        except Exception:
+            pass
+
     def _focus_in_me(self) -> bool:
         try:
             w = self.focus_get()
@@ -221,6 +350,7 @@ class PostList(ttk.Frame):
             ent = ttk.Entry(self.tree, textvariable=var)
             ent.place(x=x + 1, y=y + 1, width=w - 2, height=h - 2)
             ent._orig_value = var.get()  # type: ignore[attr-defined]
+            ent.bind("<Button-1>", lambda e, _iid=iid: self._select_row_from_overlay(_iid), add="+")
 
             def _on_focus_in(_=None, _ent=ent, _var=var):
                 _ent._orig_value = _var.get()  # 편집 시작값 저장
@@ -371,6 +501,11 @@ class PostList(ttk.Frame):
         except Exception:
             pass
 
+        try:
+            self._sync_toggle_ui_for_selection()
+        except Exception:
+            pass
+
     # ---------- 유틸 ----------
 
     # post_list.py
@@ -416,6 +551,11 @@ class PostList(ttk.Frame):
         try:
             self.tree.update_idletasks()
             self._refresh_wm_entries()
+        except Exception:
+            pass
+
+        try:
+            self._sync_toggle_ui_for_selection()
         except Exception:
             pass
 
@@ -465,6 +605,11 @@ class PostList(ttk.Frame):
         except Exception:
             pass
 
+        try:
+            self._sync_toggle_ui_for_selection()
+        except Exception:
+            pass
+
     def remove_selected(self):
         sel = self.tree.selection()
         if not sel:
@@ -480,6 +625,11 @@ class PostList(ttk.Frame):
         except Exception:
             pass
 
+        try:
+            self._sync_toggle_ui_for_selection()
+        except Exception:
+            pass
+
     def remove_all(self):
         if not self.tree.get_children():
             return
@@ -488,6 +638,11 @@ class PostList(ttk.Frame):
 
         try:
             self._refresh_wm_entries()
+        except Exception:
+            pass
+
+        try:
+            self._sync_toggle_ui_for_selection()
         except Exception:
             pass
 
@@ -576,6 +731,11 @@ class PostList(ttk.Frame):
 
         try:
             self._refresh_wm_entries()
+        except Exception:
+            pass
+
+        try:
+            self._sync_toggle_ui_for_selection()
         except Exception:
             pass
 

@@ -11,11 +11,14 @@ class PostInspector(ttk.LabelFrame):
     """게시물 단위 워터마크 옵션 (텍스트/폰트/스케일/불투명/색/외곽선)"""
     def __init__(self, master,
                  on_change: Optional[OnPostOverridesChange] = None,
-                 on_apply_all: Optional[OnApplyToAllImages] = None):
+                 on_apply_all: Optional[OnApplyToAllImages] = None,
+                 default_font_path: str | None = None):
         super().__init__(master, text="📂 게시물 워터마크", padding=(8, 6))
         self.on_change = on_change
         self.on_apply_all = on_apply_all
         self._post_key: str | None = None
+
+        self._global_font_path = default_font_path or ""
 
         # 상태
         self.var_enabled = tk.BooleanVar(master=self, value=False)
@@ -119,7 +122,8 @@ class PostInspector(ttk.LabelFrame):
         enabled = bool(ov)
         self.var_enabled.set(enabled)
         self.var_text.set(ov.get("text", "" if enabled else ""))
-        self.var_font.set(ov.get("font_path", ""))
+        font_from_ov = ov.get("font_path", "") if ov else ""
+        self.var_font.set(font_from_ov or self._global_font_path)
         self.var_scale.set(int(ov.get("scale", 20)))
         self.var_opacity.set(int(ov.get("opacity", 30)))
         self.var_fill.set(ov.get("fill", "#000000"))
