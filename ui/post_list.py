@@ -48,6 +48,13 @@ class PostList(ttk.Frame):
         # 스타일 약간 정리
         style = ttk.Style(self)
 
+        style.configure("PostWM.TEntry", fieldbackground="#E8F1FF")
+        style.configure("ImgWM.TEntry", fieldbackground="#FFFFFF")
+        try:
+            style.map("PostWM.TEntry", fieldbackground=[("focus", "#FFF1BF")])
+        except Exception:
+            pass
+
         style.configure("Treeview", rowheight=26, padding=(2, 2))
         style.configure("Treeview.Heading", padding=(6, 4))
 
@@ -169,6 +176,19 @@ class PostList(ttk.Frame):
         root.bind_all("<Command-z>", lambda e: (self._do_undo(e) if self._focus_in_me() else None), add="+")
 
     # ---------- 데이터 채우기 ----------
+    def _entry_style_for_iid(self, iid: str) -> str:
+        """
+        해당 행의 타입에 따라 오버레이 Entry 스타일을 정한다.
+        - post  → PostWM.TEntry (배경 강조)
+        - image → ImgWM.TEntry  (기본)
+        - root  → Entry 안 만듦(이미 로직상 제외)
+        """
+        item = self._get_item(iid)
+        if not item:
+            return "ImgWM.TEntry"
+        typ, _ = item
+        return "PostWM.TEntry" if typ == "post" else "ImgWM.TEntry"
+
     def _current_text_for_item(self, iid: str) -> str:
         """현재 iid 항목의 표시 텍스트(실제 효과값)를 가져온다."""
         # 이미 있는 헬퍼: resolve_wm/resolve_img_wm을 이용하는 _get_raw_wm_for_iid 재사용
@@ -347,7 +367,8 @@ class PostList(ttk.Frame):
         # 없으면 생성
         if iid not in self._wm_entry_overlays:
             var = tk.StringVar(value=self._get_raw_wm_for_iid(iid))
-            ent = ttk.Entry(self.tree, textvariable=var)
+            style_name = self._entry_style_for_iid(iid)
+            ent = ttk.Entry(self.tree, textvariable=var, style=style_name)
             ent.place(x=x + 1, y=y + 1, width=w - 2, height=h - 2)
             ent._orig_value = var.get()  # type: ignore[attr-defined]
             ent.bind("<Button-1>", lambda e, _iid=iid: self._select_row_from_overlay(_iid), add="+")
@@ -385,6 +406,12 @@ class PostList(ttk.Frame):
             ent = self._wm_entry_overlays[iid]
             var = self._wm_entry_vars[iid]
             ent.place(x=x + 1, y=y + 1, width=w - 2, height=h - 2)
+
+            try:
+                ent.configure(style=self._entry_style_for_iid(iid))
+            except Exception:
+                pass
+
             cur_raw = self._get_raw_wm_for_iid(iid)
             if var.get() != cur_raw:
                 var.set(cur_raw)
@@ -959,45 +986,6 @@ class PostList(ttk.Frame):
         self._edit_iid = None
         self._edit_col = None
         self._pre_edit_snapshot = None
-
-    # def _focus_row(self, iid: str | None):
-    #     if not iid:
-    #         return
-    #     try:
-    #         # 선택/포커스/가시영역 보장
-    #         self.tree.selection_set(iid)
-    #         self.tree.focus(iid)
-    #         self.tree.see(iid)
-    #         self.update_idletasks()
-    #     except Exception:
-    #         pass
-    #
-    #     # (선택) 워터마크 칸이 오버레이 Entry 형태라면 그 엔트리로 커서 주기
-    #     try:
-    #         ent = getattr(self, "_wm_entry_overlays", {}).get(iid)
-    #         if ent:
-    #             ent.focus_set()
-    #             ent.icursor("end")
-    #     except Exception:
-    #         pass
-    #
-    #     try:
-    #         bbox = self.tree.bbox(iid, "#1")
-    #         if bbox:
-    #             # _on_double_click과 동일하게 Entry 오픈
-    #             x, y, w, h = bbox
-    #             cur = self.tree.set(iid, "wm_text")
-    #             self._edit_iid, self._edit_col = iid, "#1"
-    #             self._edit_entry = ttk.Entry(self.tree)
-    #             self._edit_entry.insert(0, cur)
-    #             self._edit_entry.select_range(0, tk.END)
-    #             self._edit_entry.focus()
-    #             self._edit_entry.place(x=x, y=y, width=w, height=h)
-    #             self._edit_entry.bind("<Return>", lambda e: self._end_edit(True))
-    #             self._edit_entry.bind("<Escape>", lambda e: self._end_edit(False))
-    #             self._edit_entry.bind("<FocusOut>", lambda e: self._end_edit(True))
-    #     except Exception:
-    #         pass
 
     def _ancestors(self, iid: str):
         chain = []
