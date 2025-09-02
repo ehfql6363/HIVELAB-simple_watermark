@@ -64,15 +64,6 @@ class RootPanel(ttk.LabelFrame):
         self.rows_container = self.scroll.inner
 
     # ───────── Public API ─────────
-    def set_max_height(self, max_h: int):
-        """헤더(A패널) 높이 클램프"""
-        try:
-            self.update_idletasks()
-            self.configure(height=int(max_h))
-            self.grid_propagate(False)
-        except Exception:
-            pass
-
     def set_max_height(self, h: int):
         """헤더 줄 높이를 억지로 키우지 않도록, 내부 스크롤 높이를 제한한다."""
         try:
