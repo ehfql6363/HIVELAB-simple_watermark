@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from pathlib import Path
-from typing import Callable, List, Optional, Dict, Tuple
-from settings import RootConfig, DEFAULT_WM_TEXT, IMAGES_VROOT
 
-from settings import RootConfig, DEFAULT_WM_TEXT
+import tkinter as tk
+from pathlib import Path
+from tkinter import ttk, filedialog, messagebox
+from typing import Callable, List, Optional, Dict
+
+from settings import RootConfig, DEFAULT_WM_TEXT, IMAGES_VROOT
 from ui.scrollframe import ScrollFrame
+from services.autocomplete import AutocompleteIndex
+from util.ac_popup import ACPopup
 
 IMAGES_DISPLAY = "이미지"  # 가상 루트의 표시 라벨
 
@@ -64,6 +66,86 @@ class RootPanel(ttk.LabelFrame):
         self.rows_container = self.scroll.inner
 
     # ───────── Public API ─────────
+    def _ensure_ac_objects(self):
+        """필요 시 자동완성 객체를 지연 생성."""
+        if not hasattr(self, "_ac"):
+            try:
+                self._ac = AutocompleteIndex(n=3)
+            except Exception:
+                self._ac = None
+        if not hasattr(self, "_ac_popup"):
+            try:
+                self._ac_popup = ACPopup(self, on_pick=self._on_ac_pick)
+            except Exception:
+                self._ac_popup = None
+        if not hasattr(self, "_ac_target_entry"):
+            self._ac_target_entry = None
+
+    def _update_ac_from_text(self, widget: tk.Entry, text: str):
+        """현재 텍스트로 추천 리스트 갱신."""
+        self._ensure_ac_objects()
+        if not self._ac or not self._ac_popup:
+            return
+        # 후보 풀은 AppSettings에서 가져오되 예외시 빈 리스트
+        try:
+            from settings import AppSettings
+            pool = AppSettings.load().autocomplete_texts or []
+            self._ac.rebuild(pool)
+        except Exception:
+            pool = []
+        try:
+            results = self._ac.query(text or "", top_k=10)
+        except Exception:
+            results = []
+        choices = [t for (t, _s) in results]
+        if choices:
+            self.after_idle(lambda: self._ac_popup.show_below(widget, choices))
+        else:
+            self._ac_popup.hide()
+
+    def _wire_autocomplete(self, entry_widget: tk.Entry):
+        """Entry 하나에 자동완성 바인딩을 붙인다."""
+        self._ensure_ac_objects()
+        if not self._ac_popup:
+            return  # 팝업 생성 실패 시 조용히 무시
+
+        def _accept_if_visible(_e=None):
+            try:
+                if self._ac_popup and self._ac_popup.is_visible():
+                    self._ac_popup._confirm(None)
+                    return "break"
+            except Exception:
+                pass
+            return None
+
+        entry_widget.bind("<FocusIn>",
+                          lambda _e, w=entry_widget: (setattr(self, "_ac_target_entry", w),
+                                                      self._update_ac_from_text(w, w.get())),
+                          add="+")
+        entry_widget.bind("<KeyRelease>",
+                          lambda _e, w=entry_widget: self._update_ac_from_text(w, w.get()),
+                          add="+")
+        entry_widget.bind("<Down>", lambda _e: (self._ac_popup.move_selection(+1), "break"), add="+")
+        entry_widget.bind("<Up>", lambda _e: (self._ac_popup.move_selection(-1), "break"), add="+")
+        entry_widget.bind("<Return>", _accept_if_visible, add="+")
+        entry_widget.bind("<Escape>", lambda _e: (self._ac_popup.hide(), "break"), add="+")
+        entry_widget.bind("<FocusOut>", lambda _e: self._ac_popup.hide(), add="+")
+
+    def _on_ac_pick(self, text: str):
+        """팝업에서 항목 선택 시 Entry에 바로 반영."""
+        try:
+            w = getattr(self, "_ac_target_entry", None)
+            if w and w.winfo_exists():
+                w.delete(0, "end")
+                w.insert(0, text)
+                # 바뀐 내용 즉시 반영되도록 KeyRelease 한 번 쏴줌
+                try:
+                    w.event_generate("<KeyRelease>")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def set_max_height(self, h: int):
         """헤더 줄 높이를 억지로 키우지 않도록, 내부 스크롤 높이를 제한한다."""
         try:
@@ -98,11 +180,12 @@ class RootPanel(ttk.LabelFrame):
 
     def ensure_images_row(self):
         """가상 루트 '이미지' 행이 없으면 추가"""
-        for row in self._rows:
-            if row["path_var"].get() == IMAGES_DISPLAY:
+        for row in getattr(self, "_rows", []):
+            if row["path_var"].get() == "이미지":
                 return
-        self._add_row(IMAGES_DISPLAY, DEFAULT_WM_TEXT)
+        self._add_row("이미지", DEFAULT_WM_TEXT)
         self._notify_change()
+        # 오타 없이 정상 호출
         self._refresh_scroll()
 
     def get_roots(self) -> List[RootConfig]:
@@ -110,11 +193,11 @@ class RootPanel(ttk.LabelFrame):
         for row in self._rows:
             root_disp = row["path_var"].get()
             wm = row["wm_var"].get()
-            # ★ 표시 라벨 "이미지" → 가상 루트 키로 변환
-            if root_disp == IMAGES_DISPLAY:
-                out.append(RootConfig(path=Path(IMAGES_VROOT), wm_text=wm or DEFAULT_WM_TEXT))
+            # 표시 라벨 "이미지" → 가상 루트 키로 변환
+            if root_disp == "이미지":
+                out.append(RootConfig(path=Path(IMAGES_VROOT), wm_text=wm))
             else:
-                out.append(RootConfig(path=Path(root_disp), wm_text=wm or DEFAULT_WM_TEXT))
+                out.append(RootConfig(path=Path(root_disp), wm_text=wm))
         return out
 
     def remove_selected(self):
@@ -172,6 +255,8 @@ class RootPanel(ttk.LabelFrame):
         wm_var = tk.StringVar(value=wm_text)
         ent_wm = ttk.Entry(rowf, textvariable=wm_var)
         ent_wm.grid(row=0, column=2, sticky="we")
+
+        self._wire_autocomplete(ent_wm)
 
         def _del_this():
             try:

@@ -144,7 +144,8 @@ class MainWindow(BaseTk):
         # 4) 무언가 반영됐다면 옵션 변경 반영
         if dirs or files:
             try:
-                self._on_options_changed()
+                # 루트/드롭 상태가 변했으니 포스트 트리를 재생성
+                self._rebuild_posts_from_roots()
             except Exception:
                 pass
 
@@ -469,11 +470,15 @@ class MainWindow(BaseTk):
         # (3) 우측 하단 버튼바 — 썸네일 아래, 오른쪽 정렬
         btnbar = ttk.Frame(right_col)
         btnbar.pack(fill="x", side="top", pady=(8, 0))
-        ttk.Frame(btnbar).pack(side="left", fill="x", expand=True)  # 오른쪽 정렬 스페이서
-        self.btn_start = ttk.Button(btnbar, text="시작 (F5)", command=self.on_start_batch)
-        self.btn_start.pack(side="right", padx=(6, 0))
+        # 오른쪽 정렬 스페이서
+        ttk.Frame(btnbar).pack(side="left", fill="x", expand=True)
+
+        # 버튼(오른쪽 정렬). 화면에 '시작 → 출력 폴더 열기' 순서로 보이도록 pack 순서 조정
         self.btn_open = ttk.Button(btnbar, text="출력 폴더 열기 (F6)", command=self._open_output_folder)
         self.btn_open.pack(side="right")
+
+        self.btn_start = ttk.Button(btnbar, text="시작 (F5)", command=self.on_start_batch)
+        self.btn_start.pack(side="right", padx=(0, 6))
 
     def _base_text_from_root_global(self, meta: dict) -> str:
         """루트 wm_text가 있으면 그것, 없으면 글로벌 default_wm_text."""

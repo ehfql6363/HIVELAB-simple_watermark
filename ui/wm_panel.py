@@ -171,6 +171,37 @@ class WmPanel(ttk.LabelFrame):
         self._max_height: Optional[int] = None
 
     # ───────── 외부 API ─────────
+    def add_dropped_images(self, paths):
+        """글로벌 DnD로 받은 이미지 목록을 내부 큐에 적재하고 UI 갱신."""
+        added = False
+        for p in (paths or []):
+            try:
+                if not p:
+                    continue
+                path = Path(p)
+                if path.is_file() and path.suffix.lower() in IMG_EXTS:
+                    if path not in self._dropped_images:
+                        self._dropped_images.append(path)
+                        added = True
+                        try:
+                            self._recent_root_dir = path.parent
+                        except Exception:
+                            pass
+            except Exception:
+                # 개별 항목 문제는 무시하고 계속 진행
+                pass
+
+        if added:
+            try:
+                self._update_drop_label()
+            except Exception:
+                pass
+            # 상위(MainWindow) 쪽에서 옵션/목록 재구성을 트리거하도록 알림
+            try:
+                self._notify_change()
+            except Exception:
+                pass
+
     def set_initial_options(self, settings):
         # 최근 경로 세팅
         self._recent_root_dir = settings.last_dir_output_dialog
