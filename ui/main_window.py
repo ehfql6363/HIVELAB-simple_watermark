@@ -35,6 +35,7 @@ except Exception:
 class MainWindow(BaseTk):
     def __init__(self, controller: AppController):
         super().__init__()
+        self._preview_after = None
         self.title("게시물 워터마크 & 리사이즈")
         self.geometry("1180x960")
         # 창 너무 작아질 때 하단 상태바가 가려지지 않도록 최소 크기
@@ -208,7 +209,7 @@ class MainWindow(BaseTk):
 
         # 4) 전체 프리뷰 재생성
         try:
-            self.on_preview()
+            self._debounced_preview()
         except Exception:
             pass
 
@@ -337,7 +338,9 @@ class MainWindow(BaseTk):
             on_image_wmtext_change=self._on_image_wmtext_change,
             on_image_select=self._on_postlist_image_select,
             on_toggle_wm=self._on_list_toggle_wm,
-            on_toggle_wm_mode=self._on_list_toggle_wm_mode
+            on_toggle_wm_mode=self._on_list_toggle_wm_mode,
+            settings=self.app_settings,
+            controller=self.controller
         )
 
         self.post_list.pack(fill="both", expand=True)
@@ -605,7 +608,7 @@ class MainWindow(BaseTk):
 
         # 4) 프리뷰 갱신
         try:
-            self.on_preview()
+            self._debounced_preview()
         except Exception:
             pass
 
@@ -736,6 +739,14 @@ class MainWindow(BaseTk):
     # ──────────────────────────────────────────────────────────────────────
     # 프리뷰 (개별 오버라이드 지원)
     # ──────────────────────────────────────────────────────────────────────
+    def _debounced_preview(self, delay_ms=40):
+        try:
+            if self._preview_after:
+                self.after_cancel(self._preview_after)
+        except Exception:
+            pass
+        self._preview_after = self.after(delay_ms, self.on_preview)
+
     def on_preview(self):
         # 1) 선택/유효성 체크
         key = self.post_list.get_selected_post()

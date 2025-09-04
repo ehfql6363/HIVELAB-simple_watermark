@@ -3,8 +3,14 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple, Union
+from settings import AppSettings
+from services.autocomplete import AutocompleteIndex
+from util.ac_manager import ACManager
+from util.ac_popup import ACPopup
+import os, sys, json, threading, queue, subprocess
 
 from settings import IMAGES_VROOT  # 가상 루트 라벨링에 사용
+from util.win_ime_bridge import register_entry, unregister_entry, install_root_hook
 
 ItemKey = Union[str, Tuple[str, Path]]  # 'post'면 key(str), 'image'면 (key, path)
 
@@ -21,8 +27,12 @@ class PostList(ttk.Frame):
         on_image_select: Optional[Callable[[str, Path], None]] = None,      # 이미지 행 선택 시 알림(선택)
         on_toggle_wm: Optional[Callable[[list[Tuple[str, ItemKey]]], None]] = None,
         on_toggle_wm_mode: Optional[Callable[[list[Tuple[str, ItemKey]], str], None]] = None,
+        settings: AppSettings = None,
+        controller: ACManager = None,
     ):
         super().__init__(master)
+        self.settings = settings or AppSettings()
+        self.controller = controller
         self.on_select = on_select
         self.on_activate = on_activate
         self.resolve_wm = resolve_wm or (lambda meta: "")
@@ -44,6 +54,16 @@ class PostList(ttk.Frame):
         self._wm_entry_vars: dict[str, tk.StringVar] = {}  # iid -> textvariable
         self._wm_col_id = "wm_text"
         self._wm_col_index = "#1"  # Treeview column index for wm_text
+
+        # ✅ 자동완성 인덱스
+        texts = getattr(self.settings, "autocomplete_texts", []) or []
+        self._ac = AutocompleteIndex(n=3)
+        self._ac.rebuild(texts)
+        self._ac_popup = ACPopup(self, on_pick=self._on_ac_pick)
+        self._ac_target_entry = None
+
+        self._qt_sessions: dict[str, dict] = {}
+        self._qt_open = False
 
         # 스타일 약간 정리
         style = ttk.Style(self)
@@ -145,7 +165,7 @@ class PostList(ttk.Frame):
             import ttkbootstrap as tb
             self._wm_toggle = tb.Checkbutton(
                 btns,
-                text="비우기 / 복원",
+                text="복원 / 비우기",
                 variable=self._mode_var,
                 bootstyle="round-toggle",
                 command=_apply_mode_toggle,
@@ -153,7 +173,7 @@ class PostList(ttk.Frame):
         except Exception:
             self._wm_toggle = ttk.Checkbutton(
                 btns,
-                text="비우기 / 복원",
+                text="복원 / 비우기",
                 variable=self._mode_var,
                 command=_apply_mode_toggle,
                 style="Toolbutton",
@@ -161,6 +181,9 @@ class PostList(ttk.Frame):
             )
         ttk.Button(btns, text="모두 삭제", command=self.remove_all).pack(side="left", padx=(0, 6))
         self._wm_toggle.pack(side="left")
+
+        self.btn_ac_manage = ttk.Button(btns, text="텍스트 추가", command=self._open_ac_manager)
+        self.btn_ac_manage.pack(side="right", padx=(0, 12))
 
         # 이벤트
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
@@ -174,8 +197,239 @@ class PostList(ttk.Frame):
         root = self.winfo_toplevel()
         root.bind_all("<Control-z>", lambda e: (self._do_undo(e) if self._focus_in_me() else None), add="+")
         root.bind_all("<Command-z>", lambda e: (self._do_undo(e) if self._focus_in_me() else None), add="+")
+        root.bind_all("<Button-1>", self._on_global_click_hide_ac, add="+")
+
+        try:
+            root_hwnd = int(self.winfo_toplevel().winfo_id())
+            install_root_hook(root_hwnd)
+        except Exception:
+            pass
 
     # ---------- 데이터 채우기 ----------
+    def _qt_helper_path(self) -> str:
+        # qt_inline_input.py 경로 추적 (프로젝트/패키지 구조에 맞게 조정)
+        # ui/post_list.py 기준으로 상위 폴더에 qt_inline_input.py가 있다고 가정
+        return str((Path(__file__).resolve().parent.parent / "qt_inline_input.py"))
+
+    def _open_qt_editor_for(self, iid: str, entry_widget: ttk.Entry):
+        """지정 셀 위치에 Qt 입력창을 띄우고, 출력(JSON line)을 읽어 Tk에 반영."""
+        if not iid or iid not in self._wm_entry_vars:
+            return
+        # 셀 화면 좌표 계산
+        try:
+            x_local, y_local, w, h = self.tree.bbox(iid, self._wm_col_index)
+            x = self.tree.winfo_rootx() + x_local
+            y = self.tree.winfo_rooty() + y_local
+        except Exception:
+            # 폴백: 위젯 기준
+            x = entry_widget.winfo_rootx()
+            y = entry_widget.winfo_rooty()
+            w = entry_widget.winfo_width()
+            h = entry_widget.winfo_height()
+
+        text0 = self._wm_entry_vars[iid].get()
+        exe = sys.executable
+        helper = self._qt_helper_path()
+        if not os.path.exists(helper):
+            messagebox.showerror("입력창", f"Qt 입력 도우미를 찾을 수 없습니다:\n{helper}")
+            return
+
+        self._ac_popup.hide()
+
+        # 프로세스 시작
+        cmd = [exe, "-u", helper, "--x", str(x), "--y", str(y), "--w", str(w), "--h", str(h), "--text", text0]
+        try:
+            creationflags = 0
+            if sys.platform.startswith("win"):
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # 콘솔창 방지(선택)
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,  # ★ 여기!
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+                creationflags=creationflags
+            )
+        except Exception as e:
+            messagebox.showerror("입력창 실행 오류", str(e))
+            return
+
+        q: "queue.Queue[str]" = queue.Queue()
+        t = threading.Thread(target=self._qt_reader, args=(proc, q), daemon=True)
+        t.start()
+
+        # 세션 등록
+        self._qt_open = True
+        try:
+            entry_widget.state(["readonly"])  # 커서/깜박임 충돌 방지
+        except Exception:
+            pass
+        self._qt_sessions[iid] = {"proc": proc, "thread": t, "q": q, "entry": entry_widget}
+
+        # 폴링 시작
+        self._poll_qt_events(iid)
+
+    def _qt_reader(self, proc: subprocess.Popen, q: "queue.Queue[str]"):
+        """서브프로세스 stdout을 라인 단위로 큐에 넣음."""
+        try:
+            if not proc.stdout:
+                return
+            for line in proc.stdout:
+                line = (line or "").strip()
+                if line:
+                    q.put(line)
+        except Exception:
+            pass
+
+    def _poll_qt_events(self, iid: str):
+        """큐에서 이벤트를 꺼내어 처리. 프로세스 종료 시까지 재호출."""
+        sess = self._qt_sessions.get(iid)
+        if not sess:
+            return
+        q = sess["q"]
+        dirty = False
+        while True:
+            try:
+                line = q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+            ev = data.get("event")
+            if ev in ("preedit", "change"):
+                # preedit: 화면에 보이는 값(커밋+조합) → 자동완성만 갱신
+                # change : 커밋된 문자열 → 실제 값 업데이트
+                t = data.get("text", "")
+                if ev == "change":
+                    # Entry 내용 즉시 반영 (Undo 루프 방지 플래그 활용)
+                    var = self._wm_entry_vars.get(iid)
+                    if var is not None:
+                        ent = sess.get("entry")
+                        try:
+                            if ent:
+                                ent._live_apply_block = True  # type: ignore[attr-defined]
+                            var.set(t)
+                        finally:
+                            if ent:
+                                ent._live_apply_block = False  # type: ignore[attr-defined]
+                    # 모델 반영 (즉시)
+                    try:
+                        self._apply_wm_edit(iid, t)
+                    except Exception:
+                        pass
+                    dirty = True
+                else:  # preedit
+                    # 자동완성 팝업만 갱신
+                    ent = sess.get("entry")
+                    if ent:
+                        try:
+                            self._ac_target_entry = ent
+                            self._update_ac_from_text(ent, data.get("text", ""))
+                        except Exception:
+                            pass
+
+            elif ev in ("finish", "cancel"):
+                # finish: 최종 커밋됨, cancel: 취소
+                if ev == "finish":
+                    t = data.get("text", "")
+                    var = self._wm_entry_vars.get(iid)
+                    if var is not None:
+                        ent = sess.get("entry")
+                        try:
+                            if ent:
+                                ent._live_apply_block = True  # type: ignore[attr-defined]
+                            var.set(t)
+                        finally:
+                            if ent:
+                                ent._live_apply_block = False  # type: ignore[attr-defined]
+                    try:
+                        self._apply_wm_edit(iid, t)
+                    except Exception:
+                        pass
+                    dirty = True
+                # 정리
+                self._close_qt_session(iid)
+                break
+
+        # 필요 시 UI 리프레시
+        if dirty:
+            try:
+                self._refresh_wm_entries()
+            except Exception:
+                pass
+
+        # 아직 살아있으면 다음 폴링 예약
+        proc = sess.get("proc")
+        if proc and (proc.poll() is None):
+            self.after(15, lambda: self._poll_qt_events(iid))  # 60~66FPS 수준 폴링
+        else:
+            self._close_qt_session(iid)
+
+    def _close_qt_session(self, iid: str):
+        sess = self._qt_sessions.pop(iid, None)
+        try:
+            self._ac_popup.hide()
+        except Exception:
+            pass
+        self._qt_open = False
+        if not sess:
+            return
+        proc: subprocess.Popen = sess.get("proc")
+        ent: ttk.Entry = sess.get("entry")
+        if ent:
+            try:
+                ent.state(["!readonly"])
+                ent.focus_set()
+                ent.icursor("end")
+            except Exception:
+                pass
+        if proc and (proc.poll() is None):
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    def _widget_is_descendant_of(self, w: tk.Widget | None, ancestor: tk.Widget | None) -> bool:
+        if not w or not ancestor:
+            return False
+        cur = w
+        try:
+            while cur is not None:
+                if cur is ancestor:
+                    return True
+                cur = cur.master
+        except Exception:
+            return False
+        return False
+
+    def _on_global_click_hide_ac(self, e):
+        # 팝업이 떠 있고, 클릭한 곳이 팝업 내부도 아니고 현재 타겟 Entry도 아니면 닫기
+        if not (self._ac_popup and self._ac_popup.winfo_viewable()):
+            return
+        w = e.widget
+        if self._widget_is_descendant_of(w, self._ac_popup):
+            return
+        if self._widget_is_descendant_of(w, self._ac_target_entry):
+            return
+        self._ac_popup.hide()
+
+    def _open_ac_manager(self):
+        def get_texts():
+            return list(self.settings.autocomplete_texts or [])
+
+        def set_texts(v):
+            self.settings.autocomplete_texts = list(v or [])
+            self.settings.save()
+
+        def on_changed():
+            self._ac.rebuild(self.settings.autocomplete_texts or [])
+
+        ACManager(self, get_texts, set_texts, on_changed)
+
     def _entry_style_for_iid(self, iid: str) -> str:
         """
         해당 행의 타입에 따라 오버레이 Entry 스타일을 정한다.
@@ -369,14 +623,92 @@ class PostList(ttk.Frame):
             var = tk.StringVar(value=self._get_raw_wm_for_iid(iid))
             style_name = self._entry_style_for_iid(iid)
             ent = ttk.Entry(self.tree, textvariable=var, style=style_name)
+            ent.bind("<FocusIn>", lambda _e, _iid=iid, _ent=ent: self._open_qt_editor_for(_iid, _ent), add="+")
+
+            # 1) IME hook 연결
+            try:
+                hwnd = int(ent.winfo_id())
+
+                def _on_ime(preedit: str, composing: bool, _ent=ent, _iid=iid):
+                    """
+                    IME 조합 중(preedit) 문자열을 받아 UI에 즉시 반영.
+                    - 실제 Entry/메타는 커밋 시점대로 두고,
+                    - 자동완성/프리뷰만 '커밋+프리에딧' 합쳐서 사용.
+                    """
+                    try:
+                        committed = self._wm_entry_vars[_iid].get()  # 현재 커밋된 내용
+                    except Exception:
+                        committed = ""
+                    visible_text = (committed + preedit) if preedit else committed
+
+                    # 자동완성은 '보이는 텍스트' 기준으로 갱신
+                    try:
+                        self._ac_target_entry = _ent
+                        self._update_ac_from_text(_ent, visible_text)
+                    except Exception:
+                        pass
+
+                    # self._debounced_preview()  # MainWindow에 만든 디바운스 사용 권장
+
+            except Exception:
+                pass
+
             ent.place(x=x + 1, y=y + 1, width=w - 2, height=h - 2)
             ent._orig_value = var.get()  # type: ignore[attr-defined]
             ent.bind("<Button-1>", lambda e, _iid=iid: self._select_row_from_overlay(_iid), add="+")
+
+            self._bind_inline_entry(ent)
+            ent._live_apply_block = False
+
+            def _tv_changed(*_):
+                if getattr(ent, "_live_apply_block", False):
+                    return
+                text = var.get()
+                # 자동완성(커밋 기준)
+                try:
+                    self._ac_target_entry = ent
+                    self._update_ac_from_text(ent, text)
+                except Exception:
+                    pass
+                # 모델 반영(원한다면 즉시)
+                try:
+                    self._apply_wm_edit(iid, text)
+                except Exception:
+                    pass
+
+            var.trace_add("write", _tv_changed)
+
+            # 2) IME 조합(프리에딧) 즉시 반영: 루트 후킹 + 해당 Entry 핸들 등록
+            try:
+                hwnd = int(ent.winfo_id())
+
+                def _ime_cb(preedit: str, composing: bool, _ent=ent, _iid=iid):
+                    """조합중 문자열까지 합쳐서 '보이는 텍스트' 기준으로 자동완성만 즉시 갱신"""
+                    committed = ""
+                    try:
+                        committed = self._wm_entry_vars[_iid].get()
+                    except Exception:
+                        pass
+                    visible = (committed + preedit) if preedit else committed
+                    try:
+                        self._ac_target_entry = _ent
+                        self._update_ac_from_text(_ent, visible)
+                    except Exception:
+                        pass
+                    # 주의: 모델 커밋은 preedit가 빈 문자열(조합 종료) 후 var.trace에서 처리됨
+
+                register_entry(hwnd, _ime_cb)
+                ent.bind("<Destroy>", lambda _e, _h=hwnd: unregister_entry(_h), add="+")
+            except Exception:
+                pass
 
             def _on_focus_in(_=None, _ent=ent, _var=var):
                 _ent._orig_value = _var.get()  # 편집 시작값 저장
 
             def _commit(_=None, _iid=iid, _var=var, _ent=ent):
+                if getattr(self, "_qt_open", False):
+                    return  # ✅ Qt 에디터 떠있는 동안 중복 커밋 방지
+
                 new_val = _var.get()
                 old_val = getattr(_ent, "_orig_value", new_val)
                 if new_val == old_val:
@@ -414,7 +746,76 @@ class PostList(ttk.Frame):
 
             cur_raw = self._get_raw_wm_for_iid(iid)
             if var.get() != cur_raw:
-                var.set(cur_raw)
+                try:
+                    ent._live_apply_block = True
+                    var.set(cur_raw)
+                finally:
+                    ent._live_apply_block = False
+
+    def _update_ac_from_text(self, entry_widget, text: str):
+        results = self._ac.query(text or "", top_k=10)
+        choices = [t for (t, _s) in results]
+        if choices:
+            # 위치 보정 위해 idle에 한 번 더
+            self.after_idle(lambda: self._ac_popup.show_below(entry_widget, choices))
+        else:
+            self._ac_popup.hide()
+
+    def _bind_inline_entry(self, entry_widget):
+        # 키 칠 때마다 후보 갱신
+        # entry_widget.bind("<KeyRelease>", self._on_inline_key, add="+")
+        # 포커스 잃으면 팝업 닫기
+        entry_widget.bind("<FocusOut>", lambda _e: self._ac_popup.hide(), add="+")
+        # ↑/↓로 후보 이동
+        entry_widget.bind("<Down>", lambda _e: (self._ac_popup.move_selection(+1), "break"), add="+")
+        entry_widget.bind("<Up>", lambda _e: (self._ac_popup.move_selection(-1), "break"), add="+")
+        # Enter: 팝업이 떠 있으면 자동완성 확정 / 아니면 기존 커밋 로직
+        entry_widget.bind("<Return>", self._accept_ac_if_visible, add="+")
+        entry_widget.bind("<Escape>", lambda _e: (self._ac_popup.hide(), "break"), add="+")
+
+    def _accept_ac_if_visible(self, e):
+        if self._ac_popup.winfo_viewable():
+            # 팝업 내 선택 항목 확정
+            self._ac_popup._confirm(None)
+            return "break"  # 기본 Return 핸들러(커밋)를 막음
+        return None
+
+    def _on_inline_key(self, e):
+        w = e.widget
+        self._ac_target_entry = w
+
+        # ✅ IME 지연 보정: 아주 짧게 미룬 뒤 현재 텍스트를 읽어 후보 계산
+        def run():
+            try:
+                prefix = w.get()
+            except Exception:
+                prefix = ""
+            results = self._ac.query(prefix, top_k=10)
+            choices = [t for (t, _score) in results]
+            if choices:
+                # 위치 계산이 늦는 경우가 있어 idle로 한 번 더 보정해도 OK
+                self._ac_popup.show_below(w, choices)
+            else:
+                self._ac_popup.hide()
+
+        # 0~30ms 정도면 충분. 플랫폼/PC에 따라 1~20ms 권장
+        self.after(15, run)
+
+    def _on_ac_pick(self, text: str):
+        if not self._ac_target_entry:
+            return
+        self._ac_target_entry.delete(0, "end")
+        self._ac_target_entry.insert(0, text)
+        self._ac.mark_used(text)
+
+        # 이 Entry가 오버레이인 경우, 기존 커밋 함수를 태워서 모델/UI를 반영
+        try:
+            # 오버레이 커밋은 _ensure_overlay_for_iid 내부의 _commit 로직이 담당하므로
+            # 여기서는 '포커스 이동 → FocusOut'으로 커밋 트리거를 유도하거나,
+            # 직접 엔터 이벤트를 보내도 됩니다. 가장 안전한 건 FocusOut 유도.
+            self._ac_target_entry.event_generate("<FocusOut>")
+        except Exception:
+            pass
 
     def _destroy_overlay_for_iid(self, iid: str):
         ent = self._wm_entry_overlays.pop(iid, None)

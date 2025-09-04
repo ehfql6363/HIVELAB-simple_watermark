@@ -35,6 +35,7 @@ class AppSettings:
     wm_font_path: Optional[Path] = None
     last_dir_output_dialog: Optional[Path] = None
     last_dir_font_dialog: Optional[Path] = None
+    autocomplete_texts: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         if self.sizes is None:
@@ -57,6 +58,7 @@ class AppSettings:
             "wm_font_path": p(self.wm_font_path) if self.wm_font_path else "",
             "last_dir_output_dialog": p(self.last_dir_output_dialog) if self.last_dir_output_dialog else "",
             "last_dir_font_dialog": p(self.last_dir_font_dialog) if self.last_dir_font_dialog else "",
+            "autocomplete_texts": list(dict.fromkeys([t.strip() for t in self.autocomplete_texts if str(t).strip()])), # ✅ 중복 제거
         }
 
     @staticmethod
@@ -75,7 +77,7 @@ class AppSettings:
                 return dflt
 
         sizes = d.get("sizes") or DEFAULT_SIZES
-        return AppSettings(
+        s =  AppSettings(
             output_root=Path(d.get("output_root", "")) if d.get("output_root") else Path(""),
             sizes=[tuple(map(int, s)) for s in sizes],
             bg_color=tup3(d.get("bg_color", DEFAULT_BG), DEFAULT_BG),
@@ -91,6 +93,9 @@ class AppSettings:
             last_dir_output_dialog=Path(d["last_dir_output_dialog"]) if d.get("last_dir_output_dialog") else None,
             last_dir_font_dialog=Path(d["last_dir_font_dialog"]) if d.get("last_dir_font_dialog") else None,
         )
+
+        s.autocomplete_texts = [str(t).strip() for t in d.get("autocomplete_texts", []) if str(t).strip()]
+        return s
 
     # -------- file IO --------
     def save(self) -> None:
@@ -108,6 +113,7 @@ class AppSettings:
             "wm_font_path": str(self.wm_font_path) if self.wm_font_path else "",
             "last_dir_output_dialog": str(self.last_dir_output_dialog) if self.last_dir_output_dialog else "",
             "last_dir_font_dialog": str(self.last_dir_font_dialog) if self.last_dir_font_dialog else "",
+            "autocomplete_texts": list(dict.fromkeys([t.strip() for t in self.autocomplete_texts if str(t).strip()])),
         }
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
