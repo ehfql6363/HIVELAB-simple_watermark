@@ -528,16 +528,15 @@ class PreviewPane(ttk.Frame):
         orig_cv = self._original_canvas()
 
         if self._placement_mode.get() == "drag":
-            # ✅ 드래그 모드: 적용쪽만 마커, 원본쪽은 오버레이 제거
+            # 드래그 모드: 적용쪽만 마커. 단, '마우스를 누르고 있을 때만' 유령 표시
             apply_cv.select_grid_cell(None)
-            apply_cv.set_marker_norm(self._anchor_norm)
+            apply_cv.set_marker_norm(self._anchor_norm if self._dragging else None)
 
             orig_cv.select_grid_cell(None)
             orig_cv.set_marker_norm(None)
 
         else:  # "grid"
-            # ✅ 그리드 모드: 원본쪽만 그리드, 적용쪽은 오버레이 제거
-            # 현재 앵커를 3x3 셀로 표시
+            # 그리드 모드: 원본쪽에만 그리드/셀 강조, 적용쪽은 유령 숨김
             ix = min(2, max(0, int(self._anchor_norm[0] * 3)))
             iy = min(2, max(0, int(self._anchor_norm[1] * 3)))
             orig_cv.select_grid_cell((ix, iy))
@@ -565,12 +564,13 @@ class PreviewPane(ttk.Frame):
 
     def _on_click(self, e):
         if self._placement_mode.get() == "grid":
-            # ✅ 원본쪽 클릭만 처리
+            # 원본쪽 클릭만 처리
             if e.widget is not self._original_canvas():
                 return
             cv = self._original_canvas()
             norm = cv.event_to_norm(e.x, e.y)
-            if not norm: return
+            if not norm:
+                return
             nx, ny = norm
             ix = min(2, max(0, int(nx * 3)))
             iy = min(2, max(0, int(ny * 3)))
@@ -582,15 +582,13 @@ class PreviewPane(ttk.Frame):
             if self._on_anchor_change:
                 self._on_anchor_change(self._anchor_norm)
         else:
-            # ✅ 드래그 모드: 적용쪽에서만 드래그 시작
-            if self._wm_cfg is not None:
-                try:
-                    self._apply_canvas().set_wm_config(self._wm_cfg)
-                except Exception:
-                    pass
+            # 드래그 모드: 적용쪽에서만 드래그 시작
             if e.widget is not self._apply_canvas():
                 return
             self._dragging = True
+            # 마우스 누른 순간부터 유령 표시
+            self._apply_canvas().set_marker_norm(self._anchor_norm)
+            # 현재 지점으로 바로 1회 갱신
             self._on_drag(e)
 
     def _on_drag(self, e):
