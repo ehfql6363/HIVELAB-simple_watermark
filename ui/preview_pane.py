@@ -6,6 +6,11 @@ from collections import deque
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from typing import Callable, Tuple, Optional, Dict
 
+try:
+    from services.watermark import make_overlay_sprite
+except Exception:
+    make_overlay_sprite = None  # 폴백 경로가 전부 없으면 아래에서 로컬 생성기로 처리
+
 _DEFAULT_FONTS = [
     "arial.ttf", "tahoma.ttf", "segoeui.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -232,12 +237,15 @@ class _CheckerCanvas(tk.Canvas):
         self.tag_raise("grid")
 
     def _ensure_wm_sprite(self):
+        # 설정/텍스트 유효성
         if not self._wm_cfg:
             self._wm_sprite_key = None
             self._wm_sprite_tk = None
             self._clear_wmghost()
             return
-        txt = (self._wm_cfg.get("text") or "").strip()
+
+        txt = (self._wm_cfg.get("text") or "")
+        # 빈 문자열도 '워터마크 없음'으로 명확히 처리
         if txt == "":
             self._wm_sprite_key = None
             self._wm_sprite_tk = None
@@ -245,8 +253,10 @@ class _CheckerCanvas(tk.Canvas):
             return
 
         x0, y0, iw, ih = self._last["x0"], self._last["y0"], self._last["iw"], self._last["ih"]
-        if iw <= 1 or ih <= 1: return
+        if iw <= 1 or ih <= 1:
+            return
 
+        # 파라미터 추출
         op = int(self._wm_cfg.get("opacity", 30))
         scale_pct = int(self._wm_cfg.get("scale_pct", 5))
         fill = tuple(self._wm_cfg.get("fill", (0, 0, 0)))
@@ -254,37 +264,92 @@ class _CheckerCanvas(tk.Canvas):
         sw = int(self._wm_cfg.get("stroke_w", 2))
         font_path = self._wm_cfg.get("font_path") or None
 
-        target_h_raw = max(1, int(min(iw, ih) * (scale_pct / 100.0)))
-        target_h = (target_h_raw + 7) // 8 * 8
-
-        key = (txt, op, scale_pct, fill, stroke, sw, target_h, font_path)
+        # 유령 스프라이트 캐시 키 (알고리즘 태그 + 캔버스 표시 크기까지 포함)
+        key = ("hfit-sync", txt, op, scale_pct, fill, stroke, sw, (font_path or ""), iw, ih)
         if key == self._wm_sprite_key and self._wm_sprite_tk is not None:
             return
 
-        # 폰트 크기도 height-fit 로 계산
-        font_size = _fit_font_by_width(txt, target_h, stroke_width=sw, font_path=font_path)
-        font = _pick_font(font_size, font_path=font_path)
+        # 1) 권장: 최종 합성과 동일한 생성기 사용 → 미리보기/드래그/저장 모두 같은 크기
+        pil_over = None
+        if make_overlay_sprite:
+            try:
+                pil_over = make_overlay_sprite(
+                    text=txt,
+                    canvas_wh=(iw, ih),  # 표시 중인 이미지의 실제 렌더 크기
+                    scale_pct=scale_pct,
+                    opacity_pct=op,
+                    fill_rgb=fill,
+                    stroke_rgb=stroke,
+                    stroke_width=sw,
+                    font_path=font_path,
+                )
+            except Exception:
+                pil_over = None
 
-        tmp = Image.new("L", (8, 8))
-        d = ImageDraw.Draw(tmp)
-        l, t, r, b = d.textbbox((0, 0), txt, font=font, stroke_width=max(0, sw))
-        tw, th = max(1, r - l), max(1, b - t)
+        # 2) 폴백: 로컬 생성(높이 기준). import 실패나 예외 시 사용
+        if pil_over is None:
+            # --- 로컬 height-fit 생성기 ---
+            from PIL import Image, ImageDraw, ImageFont
 
-        alpha = int(255 * (op / 100.0))
-        fill_rgba = (fill[0], fill[1], fill[2], alpha)
-        stroke_rgba = (stroke[0], stroke[1], stroke[2], alpha)
+            def _pick_font(size: int, font_path: Optional[str] = None):
+                if font_path:
+                    try:
+                        return ImageFont.truetype(font_path, size=size)
+                    except Exception:
+                        pass
+                for cand in _DEFAULT_FONTS:
+                    try:
+                        return ImageFont.truetype(cand, size=size)
+                    except Exception:
+                        pass
+                return ImageFont.load_default()
 
-        over = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-        d2 = ImageDraw.Draw(over)
-        d2.text((-l, -t), txt, font=font, fill=fill_rgba,
-                stroke_width=max(0, sw), stroke_fill=stroke_rgba)
+            def _measure(font, text, stroke_width=0):
+                d = ImageDraw.Draw(Image.new("L", (8, 8)))
+                l, t, r, b = d.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+                return (l, t, r, b), max(1, b - t)
 
-        tkimg = ImageTk.PhotoImage(over)
+            # 목표 높이(짧은 변 비례)
+            target_h = max(1, int(min(iw, ih) * (max(0, scale_pct) / 100.0)))
+            lo, hi, best = 6, max(12, target_h * 3), 12
+            best_bbox = (0, 0, 1, 1)
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                f = _pick_font(mid, font_path)
+                bbox, h = _measure(f, txt, stroke_width=max(0, sw))
+                if h <= target_h:
+                    best = mid
+                    best_bbox = bbox
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+
+            f = _pick_font(best, font_path)
+            (l, t, r, b), _ = _measure(f, txt, stroke_width=max(0, sw))
+            tw, th = max(1, r - l), max(1, b - t)
+
+            pil_over = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+            d2 = ImageDraw.Draw(pil_over)
+            alpha = int(255 * (op / 100.0))
+            d2.text(
+                (-l, -t), txt, font=f,
+                fill=(fill[0], fill[1], fill[2], alpha),
+                stroke_width=max(0, sw),
+                stroke_fill=(stroke[0], stroke[1], stroke[2], alpha),
+            )
+
+        # Tk 이미지로 반영
+        tkimg = ImageTk.PhotoImage(pil_over)
         self._wm_sprite_tk = tkimg
         self._wm_sprite_refs.append(tkimg)
         self._wm_sprite_key = key
+
+        # 이미 떠 있었으면 이미지 만 교체
         if self._wmghost_id is not None:
-            self.itemconfigure(self._wmghost_id, image=self._wm_sprite_tk)
+            try:
+                self.itemconfigure(self._wmghost_id, image=self._wm_sprite_tk)
+            except Exception:
+                pass
 
     def _draw_wmghost(self):
         if self._grid_visible or not self._wm_sprite_tk or self._marker_norm is None:
@@ -377,11 +442,15 @@ class PreviewPane(ttk.Frame):
 
     # ------- 외부 API -------
     def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2, font_path: Optional[str] = None):
+        """
+        이름은 유지하지만 내부는 '높이 기준'으로 동작.
+        target_w 인수를 '목표 높이'로 사용해, 글자 높이가 target_w 이하가 되도록 폰트 크기를 찾는다.
+        """
         best = low
         while low <= high:
             mid = (low + high) // 2
             _, h = _measure_text(_pick_font(mid, font_path), text, stroke_width=stroke_width)
-            if h <= target_w:  # target_w 변수명을 재사용하지만 '목표 높이'로 취급
+            if h <= target_w:  # 여기서 target_w는 '목표 높이'
                 best = mid
                 low = mid + 1
             else:
