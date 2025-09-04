@@ -1,49 +1,80 @@
 # qt_inline_input.py
-from __future__ import annotations
-import sys, json, argparse
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QApplication, QLineEdit
+import sys, json, argparse, os
+from PySide6 import QtCore, QtGui, QtWidgets
 
-def jprint(obj):  # 줄단위 JSON 출력
+def jprint(obj):
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
-class InlineEdit(QLineEdit):
-    def __init__(self, initial: str):
-        super().__init__(initial)
-        # 무테 + 항상 위 + 툴 윈도우(작게)
-        self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint | Qt.NoDropShadowWindowHint
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.textEdited.connect(self._on_text_edited)
+class Edit(QtWidgets.QLineEdit):
+    preeditChanged = QtCore.Signal(str)  # 편하게 쓰려고 사용자 시그널
 
-    def _on_text_edited(self, s: str):
-        # 사용자 편집(커밋된 부분) 변경 즉시 알림
-        jprint({"event": "change", "text": s})
-
-    # IME 조합 중 문자열까지 전달
-    def inputMethodEvent(self, e):  # type: ignore[override]
+    def inputMethodEvent(self, e: QtGui.QInputMethodEvent):  # preedit 포착
         super().inputMethodEvent(e)
-        pre = e.preeditString()  # 조합 문자열
-        visible = self.text() + pre  # 화면에 보이는 값(커밋+조합)
-        jprint({"event": "preedit", "text": visible})
+        pre = e.preeditString() or ""
+        self.preeditChanged.emit(pre)
 
-    def focusOutEvent(self, e):  # type: ignore[override]
-        jprint({"event": "finish", "text": self.text()})
-        super().focusOutEvent(e)
-        QTimer.singleShot(0, QApplication.instance().quit)
+class InlineWin(QtWidgets.QWidget):
+    def __init__(self, x, y, w, h, text0, kwfile=None):
+        super().__init__(None, QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, False)
+        self.setGeometry(x, y, w, h)
 
-    def keyPressEvent(self, e):  # type: ignore[override]
-        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
-            jprint({"event": "finish", "text": self.text()})
-            QTimer.singleShot(0, QApplication.instance().quit)
-            return
-        if e.key() == Qt.Key_Escape:
-            jprint({"event": "cancel"})
-            QTimer.singleShot(0, QApplication.instance().quit)
-            return
-        super().keyPressEvent(e)
+        lay = QtWidgets.QVBoxLayout(self); lay.setContentsMargins(0,0,0,0)
+        self.edit = Edit(self); self.edit.setText(text0 or "")
+        lay.addWidget(self.edit)
+
+        # 폰트/여백 조금 보정 (선택)
+        f = self.edit.font(); f.setPointSizeF(f.pointSizeF()+0.0); self.edit.setFont(f)
+        self.edit.setFocusPolicy(QtCore.Qt.StrongFocus)
+
+        # 이벤트 연결
+        self.edit.textChanged.connect(self.on_change)
+        self.edit.editingFinished.connect(self.on_finish)
+        self.edit.preeditChanged.connect(self.on_preedit)
+
+        # 키 처리: Esc → cancel
+        self.edit.installEventFilter(self)
+
+        self.show(); self.raise_(); self.activateWindow()
+        self.edit.setFocus(QtCore.Qt.OtherFocusReason)
+        self.edit.end(False)
+
+        # HWND 알림
+        try:
+            hwnd = int(self.winId())
+        except Exception:
+            hwnd = 0
+        jprint({"event": "ready", "hwnd": hwnd})
+
+        # 키워드 파일(자동완성용)이 필요하면 여기서 읽어다가 사용 가능
+        self.kw = []
+        if kwfile and os.path.exists(kwfile):
+            try:
+                import json as _json
+                with open(kwfile, "r", encoding="utf-8") as f:
+                    self.kw = _json.load(f)
+            except Exception:
+                pass
+
+    def eventFilter(self, obj, ev):
+        if obj is self.edit and ev.type() == QtCore.QEvent.KeyPress:
+            if ev.key() == QtCore.Qt.Key_Escape:
+                jprint({"event":"cancel"})
+                QtWidgets.QApplication.quit()
+                return True
+        return super().eventFilter(obj, ev)
+
+    def on_preedit(self, pre):
+        jprint({"event":"preedit", "preedit": pre})
+
+    def on_change(self, s):
+        jprint({"event":"change", "text": s})
+
+    def on_finish(self):
+        # editingFinished는 focus-out/Enter에서 발생
+        s = self.edit.text()
+        jprint({"event":"finish", "text": s})
+        QtWidgets.QApplication.quit()
 
 def main():
     ap = argparse.ArgumentParser()
@@ -52,17 +83,12 @@ def main():
     ap.add_argument("--w", type=int, required=True)
     ap.add_argument("--h", type=int, required=True)
     ap.add_argument("--text", type=str, default="")
-    args = ap.parse_args()
+    ap.add_argument("--kwfile", type=str, default="")
+    a = ap.parse_args()
 
-    app = QApplication(sys.argv)
-    w = InlineEdit(args.text)
-    # 약간의 내부 패딩 고려해서 살짝 키움(보기 좋게)
-    w.setGeometry(args.x, args.y, max(args.w, 120), max(args.h, 28))
-    w.show()
-    w.setFocus(Qt.ActiveWindowFocusReason)
-    # 커서 끝으로
-    w.setCursorPosition(len(args.text or ""))
-    app.exec()
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    w = InlineWin(a.x, a.y, a.w, a.h, a.text, a.kwfile)
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()
