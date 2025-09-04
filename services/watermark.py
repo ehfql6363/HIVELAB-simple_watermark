@@ -77,16 +77,20 @@ def _sprite_key(text, scale_pct, opacity, fill, stroke, stroke_w, font_path_str,
             font_path_str or "", int(short_side))
 
 def _make_sprite(text, scale_pct, opacity, fill, stroke, stroke_w, font_path_str, short_side):
-    target_w = max(1, int(short_side * (scale_pct / 100.0)))
-    lo, hi, best = 6, 512, 12
+    # 목표 '높이'를 짧은 변 * 비율로
+    target_h = max(1, int(short_side * (scale_pct / 100.0)))
+
+    lo, hi, best = 6, max(12, target_h * 3), 12
     tmp = Image.new("L", (4, 4))
     d = ImageDraw.Draw(tmp)
+
+    # 높이 기준 이분 탐색
     while lo <= hi:
         mid = (lo + hi) // 2
         f = _get_font(font_path_str or None, mid)
         l, t, r, b = d.textbbox((0, 0), text, font=f, stroke_width=max(0, stroke_w))
-        w = r - l
-        if w <= target_w:
+        h = b - t
+        if h <= target_h:
             best = mid
             lo = mid + 1
         else:
@@ -95,14 +99,18 @@ def _make_sprite(text, scale_pct, opacity, fill, stroke, stroke_w, font_path_str
     f = _get_font(font_path_str or None, best)
     l, t, r, b = d.textbbox((0, 0), text, font=f, stroke_width=max(0, stroke_w))
     w, h = max(1, r - l), max(1, b - t)
+
     sprite = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(sprite)
     a = int(255 * (opacity / 100.0))
-    draw.text((-l, -t), text, font=f,
-              fill=(fill[0], fill[1], fill[2], a),
-              stroke_width=max(0, stroke_w),
-              stroke_fill=(stroke[0], stroke[1], stroke[2], a))
+    draw.text(
+        (-l, -t), text, font=f,
+        fill=(fill[0], fill[1], fill[2], a),
+        stroke_width=max(0, stroke_w),
+        stroke_fill=(stroke[0], stroke[1], stroke[2], a)
+    )
     return sprite
+
 
 def get_wm_sprite(text, scale_pct, opacity, fill, stroke, stroke_w, font_path, canvas_size):
     short_side = min(canvas_size)

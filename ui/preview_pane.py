@@ -254,14 +254,15 @@ class _CheckerCanvas(tk.Canvas):
         sw = int(self._wm_cfg.get("stroke_w", 2))
         font_path = self._wm_cfg.get("font_path") or None
 
-        target_w_raw = max(1, int(min(iw, ih) * (scale_pct / 100.0)))
-        target_w = (target_w_raw + 7) // 8 * 8
+        target_h_raw = max(1, int(min(iw, ih) * (scale_pct / 100.0)))
+        target_h = (target_h_raw + 7) // 8 * 8
 
-        key = (txt, op, scale_pct, fill, stroke, sw, target_w, font_path)
+        key = (txt, op, scale_pct, fill, stroke, sw, target_h, font_path)
         if key == self._wm_sprite_key and self._wm_sprite_tk is not None:
             return
 
-        font_size = _fit_font_by_width(txt, target_w, stroke_width=sw, font_path=font_path)
+        # 폰트 크기도 height-fit 로 계산
+        font_size = _fit_font_by_width(txt, target_h, stroke_width=sw, font_path=font_path)
         font = _pick_font(font_size, font_path=font_path)
 
         tmp = Image.new("L", (8, 8))
@@ -375,6 +376,18 @@ class PreviewPane(ttk.Frame):
         self._apply_grid_and_visuals()
 
     # ------- 외부 API -------
+    def _fit_font_by_width(text: str, target_w: int, low=8, high=512, stroke_width=2, font_path: Optional[str] = None):
+        best = low
+        while low <= high:
+            mid = (low + high) // 2
+            _, h = _measure_text(_pick_font(mid, font_path), text, stroke_width=stroke_width)
+            if h <= target_w:  # target_w 변수명을 재사용하지만 '목표 높이'로 취급
+                best = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        return best
+
     def _apply_canvas(self) -> "_CheckerCanvas":
         # 적용(After)을 보여주는 캔버스
         return self.canvas_before if self._swapped else self.canvas_after
