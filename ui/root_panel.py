@@ -65,9 +65,51 @@ class RootPanel(ttk.LabelFrame):
         self.scroll.pack(fill="both", expand=True)
         self.rows_container = self.scroll.inner
 
+        try:
+            self.winfo_toplevel().bind_all("<Button-1>", self._on_global_click_hide_ac, add="+")
+        except Exception:
+            pass
+
     # ───────── Public API ─────────
+    def _on_global_click_hide_ac(self, e):
+        # 자동완성 객체/팝업 확보
+        self._ensure_ac_objects()
+        popup = getattr(self, "_ac_popup", None)
+        target = getattr(self, "_ac_target_entry", None)
+
+        # 팝업이 없거나 안 떠 있으면 무시
+        try:
+            if not popup or not popup.winfo_exists() or not popup.winfo_viewable():
+                return
+        except Exception:
+            return
+
+        w = e.widget
+        # 팝업 내부 클릭이면 유지
+        if self._widget_is_descendant_of(w, popup):
+            return
+        # 현재 타겟 Entry 내부 클릭이면 유지
+        if self._widget_is_descendant_of(w, target):
+            return
+
+        # 그 외(빈 공간/다른 위젯 클릭) → 팝업 완전 닫기 + 재표시 억제(다음 FocusIn 전까지)
+        self._force_hide_ac()
+
+    def _widget_is_descendant_of(self, w: tk.Widget | None, ancestor: tk.Widget | None) -> bool:
+        if not w or not ancestor:
+            return False
+        try:
+            cur = w
+            while cur is not None:
+                if cur is ancestor:
+                    return True
+                cur = cur.master
+        except Exception:
+            pass
+        return False
+
     def _ensure_ac_objects(self):
-        """필요 시 자동완성 객체를 지연 생성."""
+        """필요 시 자동완성 객체/팝업/상태 플래그를 지연 생성."""
         if not hasattr(self, "_ac"):
             try:
                 self._ac = AutocompleteIndex(n=3)
@@ -80,36 +122,111 @@ class RootPanel(ttk.LabelFrame):
                 self._ac_popup = None
         if not hasattr(self, "_ac_target_entry"):
             self._ac_target_entry = None
+        if not hasattr(self, "_ac_pending_job"):
+            self._ac_pending_job = None  # after/after_idle 예약 ID
+        if not hasattr(self, "_ac_suppressed"):
+            self._ac_suppressed = False  # True면 다음 FocusIn 전까지 팝업 표시 금지
 
-    def _update_ac_from_text(self, widget: tk.Entry, text: str):
-        """현재 텍스트로 추천 리스트 갱신."""
+    def _cancel_ac_job(self):
+        """예약된 팝업 표시 작업이 있으면 취소."""
+        jid = getattr(self, "_ac_pending_job", None)
+        if jid:
+            try:
+                self.after_cancel(jid)
+            except Exception:
+                pass
+            self._ac_pending_job = None
+
+    def _force_hide_ac(self):
+        """팝업을 즉시 숨기고, 다음 FocusIn 전까지 재표시를 막는다."""
+        self._ac_suppressed = True
+        self._cancel_ac_job()
+        try:
+            if self._ac_popup:
+                self._ac_popup.hide()
+        except Exception:
+            pass
+
+    def _update_ac_from_text(self, widget: tk.Entry, text: str, *, reason: str | None = None):
+        """현재 텍스트로 추천 리스트 갱신. Esc/FocusOut 뒤에는 재표시 억제."""
         self._ensure_ac_objects()
         if not self._ac or not self._ac_popup:
             return
-        # 후보 풀은 AppSettings에서 가져오되 예외시 빈 리스트
+
+        # Esc/FocusOut 이후엔 다음 FocusIn 전까지 표시 금지
+        self._cancel_ac_job()
+        if self._ac_suppressed:
+            self._ac_popup.hide()
+            return
+
+        # 후보 풀 로드
         try:
             from settings import AppSettings
             pool = AppSettings.load().autocomplete_texts or []
             self._ac.rebuild(pool)
         except Exception:
             pool = []
+
         try:
             results = self._ac.query(text or "", top_k=10)
         except Exception:
             results = []
+
         choices = [t for (t, _s) in results]
-        if choices:
-            self.after_idle(lambda: self._ac_popup.show_below(widget, choices))
-        else:
+        if not choices:
             self._ac_popup.hide()
+            return
+
+        def _do_show():
+            self._ac_pending_job = None
+            if self._ac_suppressed:
+                try:
+                    self._ac_popup.hide()
+                except Exception:
+                    pass
+                return
+            try:
+                self._ac_popup.show_below(widget, choices)
+            except Exception:
+                pass
+
+        # idle에 예약(다른 핸들러가 먼저 끝난 뒤 표시)
+        self._ac_pending_job = self.after_idle(_do_show)
 
     def _wire_autocomplete(self, entry_widget: tk.Entry):
         """Entry 하나에 자동완성 바인딩을 붙인다."""
         self._ensure_ac_objects()
         if not self._ac_popup:
-            return  # 팝업 생성 실패 시 조용히 무시
+            return
 
-        def _accept_if_visible(_e=None):
+        def _on_focus_in(_e=None, w=entry_widget):
+            # FocusIn 되면 다시 표시 가능 상태로 전환
+            self._ac_suppressed = False
+            self._ac_target_entry = w
+            self._update_ac_from_text(w, w.get(), reason="focusin")
+
+        def _on_focus_out(_e=None, w=entry_widget):
+            # 팝업 클릭(확정)과의 경합을 피하려고 1ms 뒤에 닫기
+            self._cancel_ac_job()
+
+            def _hide_later():
+                self._force_hide_ac()
+
+            self._ac_pending_job = self.after(1, _hide_later)
+
+        def _on_key_release(e, w=entry_widget):
+            ks = getattr(e, "keysym", "")
+            # 방향키/엔터/ESC는 여기서 갱신하지 않음
+            if ks in ("Escape", "Return", "Up", "Down"):
+                return
+            self._ac_suppressed = False
+            self._update_ac_from_text(w, w.get(), reason="typing")
+
+        def _on_escape(_e=None):
+            self._force_hide_ac()
+            return "break"
+
+        def _on_return(_e=None):
             try:
                 if self._ac_popup and self._ac_popup.is_visible():
                     self._ac_popup._confirm(None)
@@ -118,33 +235,42 @@ class RootPanel(ttk.LabelFrame):
                 pass
             return None
 
-        entry_widget.bind("<FocusIn>",
-                          lambda _e, w=entry_widget: (setattr(self, "_ac_target_entry", w),
-                                                      self._update_ac_from_text(w, w.get())),
-                          add="+")
-        entry_widget.bind("<KeyRelease>",
-                          lambda _e, w=entry_widget: self._update_ac_from_text(w, w.get()),
-                          add="+")
+        def _on_mouse_press(_e=None, w=entry_widget):
+            """
+            같은 Entry가 이미 포커스를 가진 상태에서 다시 클릭해도
+            팝업이 즉시 뜨도록 마우스 클릭에도 트리거를 건다.
+            """
+            self._ac_target_entry = w
+            # 빈 공간 클릭으로 닫을 때 suppression이 켜져 있을 수 있으니 해제
+            self._ac_suppressed = False
+            self._cancel_ac_job()
+            self._update_ac_from_text(w, w.get(), reason="mouse")
+
+        # 바인딩들
+        entry_widget.bind("<Button-1>", _on_mouse_press, add="+")  # ★ 추가
+        entry_widget.bind("<FocusIn>", _on_focus_in, add="+")
+        entry_widget.bind("<FocusOut>", _on_focus_out, add="+")
+        entry_widget.bind("<KeyRelease>", _on_key_release, add="+")
+        entry_widget.bind("<Escape>", _on_escape, add="+")
+        entry_widget.bind("<Return>", _on_return, add="+")
         entry_widget.bind("<Down>", lambda _e: (self._ac_popup.move_selection(+1), "break"), add="+")
         entry_widget.bind("<Up>", lambda _e: (self._ac_popup.move_selection(-1), "break"), add="+")
-        entry_widget.bind("<Return>", _accept_if_visible, add="+")
-        entry_widget.bind("<Escape>", lambda _e: (self._ac_popup.hide(), "break"), add="+")
-        entry_widget.bind("<FocusOut>", lambda _e: self._ac_popup.hide(), add="+")
 
     def _on_ac_pick(self, text: str):
-        """팝업에서 항목 선택 시 Entry에 바로 반영."""
+        """팝업에서 항목 선택 시 Entry에 반영하고 자연스럽게 닫기."""
         try:
             w = getattr(self, "_ac_target_entry", None)
             if w and w.winfo_exists():
                 w.delete(0, "end")
                 w.insert(0, text)
-                # 바뀐 내용 즉시 반영되도록 KeyRelease 한 번 쏴줌
                 try:
                     w.event_generate("<KeyRelease>")
                 except Exception:
                     pass
         except Exception:
             pass
+        # 선택 후에는 팝업을 닫고 재표시 억제
+        self._force_hide_ac()
 
     def set_max_height(self, h: int):
         """헤더 줄 높이를 억지로 키우지 않도록, 내부 스크롤 높이를 제한한다."""
