@@ -88,11 +88,11 @@ class WmPanel(ttk.LabelFrame):
         self.var_custom_h = tk.IntVar(value=1080)
         self.sp_w = ttk.Spinbox(sizes_bar, from_=32, to=10000, width=6, textvariable=self.var_custom_w,
                                 command=self._notify_change, state="disabled")
+        self.sp_w.pack(side="left", padx=(6, 0))
         ttk.Label(sizes_bar, text="x").pack(side="left", padx=(4, 4))
-        self.sp_w.pack(side="left")
         self.sp_h = ttk.Spinbox(sizes_bar, from_=32, to=10000, width=6, textvariable=self.var_custom_h,
                                 command=self._notify_change, state="disabled")
-        self.sp_h.pack(side="left", padx=(4, 0))
+        self.sp_h.pack(side="left")
 
         self.var_custom_w.trace_add("write", lambda *_: self._notify_change())
         self.var_custom_h.trace_add("write", lambda *_: self._notify_change())
