@@ -437,7 +437,47 @@ class PostList(ttk.Frame):
         def on_changed():
             self._ac.rebuild(self.settings.autocomplete_texts or [])
 
-        ACManager(self, get_texts, set_texts, on_changed)
+        def on_pick(text: str):
+            w = self.focus_get()
+            try:
+                # 표준 Entry라면 간단히 교체
+                if isinstance(w, tk.Entry):
+                    w.delete(0, "end")
+                    w.insert(0, text)
+                    # 엔터 친 효과(커밋)까지 주고 싶다면 아래처럼 이벤트 흉내
+                    w.event_generate("<Return>")
+            except Exception:
+                pass
+
+        dlg = ACManager(self, get_texts, set_texts, on_changed, on_pick=on_pick)  # ← 관리창 생성
+
+        # ★ 추가: '텍스트 추가' 버튼(self.btn_ac_manage) 옆에 창을 띄우기
+        try:
+            self.update_idletasks()
+            dlg.update_idletasks()
+
+            bx = self.btn_ac_manage.winfo_rootx()
+            by = self.btn_ac_manage.winfo_rooty()
+            bw = self.btn_ac_manage.winfo_width()
+
+            # 기본 위치: 버튼 오른쪽 8px
+            x = bx + bw + 8
+            y = by - 50
+
+            # 화면 밖으로 나가면 버튼 왼쪽/위로 보정
+            w = max(dlg.winfo_width(), 420)
+            h = max(dlg.winfo_height(), 300)
+            sw = dlg.winfo_screenwidth()
+            sh = dlg.winfo_screenheight()
+            if x + w > sw - 8:
+                x = max(8, bx - w - 8)
+            if y + h > sh - 8:
+                y = max(8, sh - h - 8)
+
+            dlg.geometry(f"+{x}+{y}")
+            dlg.lift()
+        except Exception:
+            pass
 
     def _entry_style_for_iid(self, iid: str) -> str:
         """
@@ -737,7 +777,7 @@ class PostList(ttk.Frame):
                 self._push_undo("WM edit", _undo, _iid)
 
             ent.bind("<FocusIn>", _on_focus_in)
-            ent.bind("<Return>", _commit)
+            ent.bind("<Return>", _commit, add="+")
 
             def _commit_guarded(_=None, _iid=iid, _var=var, _ent=ent):
                 # 1) Qt 입력창 떠 있으면 중복 커밋 방지
@@ -797,11 +837,57 @@ class PostList(ttk.Frame):
         entry_widget.bind("<Escape>", lambda _e: (self._ac_popup.hide(), "break"), add="+")
 
     def _accept_ac_if_visible(self, e):
-        if self._ac_popup.winfo_viewable():
-            # 팝업 내 선택 항목 확정
-            self._ac_popup._confirm(None)
-            return "break"  # 기본 Return 핸들러(커밋)를 막음
-        return None
+        """
+        Enter가 눌렸을 때 자동완성 팝업이 보이면
+        - 팝업의 현재 선택 항목을 확정하여 Entry에 반영
+        - 실패 시에는 top-1 추천으로 폴백
+        팝업이 없으면 기존 커밋 동작 유지
+        """
+        try:
+            vis = False
+            if self._ac_popup:
+                if hasattr(self._ac_popup, "is_visible"):
+                    vis = self._ac_popup.is_visible()
+                else:
+                    vis = bool(self._ac_popup.winfo_viewable())
+
+            if vis:
+                # 1) 팝업 쪽 확정(현재 하이라이트 적용)
+                try:
+                    # 내부적으로 on_pick -> _on_ac_pick -> FocusOut(커밋)까지 이어짐
+                    self._ac_popup._confirm(None)
+                    return "break"
+                except Exception:
+                    pass
+
+                # 2) 폴백: 현재 입력 기반 top-1 추천을 즉시 적용
+                try:
+                    w = e.widget if e and getattr(e, "widget", None) else self._ac_target_entry
+                    prefix = w.get() if w else ""
+                except Exception:
+                    w, prefix = None, ""
+
+                best = None
+                try:
+                    results = self._ac.query(prefix or "", top_k=1)
+                    if results:
+                        best = results[0][0]
+                except Exception:
+                    pass
+
+                if w and best:
+                    try:
+                        w.delete(0, "end")
+                        w.insert(0, best)
+                        self._ac.mark_used(best)
+                        # 기존 커밋 경로(포커스아웃)로 넘겨 모델/프리뷰/Undo 로직 유지
+                        w.event_generate("<FocusOut>")
+                    except Exception:
+                        pass
+                return "break"
+        except Exception:
+            pass
+        return None  # 팝업 없으면 원래 커밋 핸들러가 실행됨
 
     def _on_inline_key(self, e):
         w = e.widget

@@ -143,6 +143,7 @@ class AppSettings:
         s.last_dir_output_dialog = Path(out_dir) if out_dir else None
         font_dir = data.get("last_dir_font_dialog") or ""
         s.last_dir_font_dialog = Path(font_dir) if font_dir else None
+        s.autocomplete_texts = [str(t).strip() for t in data.get("autocomplete_texts", []) if str(t).strip()]
         return s
 
 def hex_to_rgb(hexstr: str) -> Tuple[int, int, int]:
