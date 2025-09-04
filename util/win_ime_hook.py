@@ -8,7 +8,7 @@ user32 = ctypes.windll.user32
 imm32  = ctypes.windll.imm32
 
 # Win32 types
-LRESULT = wintypes.LPARAM
+LRESULT = wintypes.LRESULT
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
 # Constants

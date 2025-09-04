@@ -10,7 +10,16 @@ from util.ac_popup import ACPopup
 import os, sys, json, threading, queue, subprocess
 
 from settings import IMAGES_VROOT  # 가상 루트 라벨링에 사용
-from util.win_ime_bridge import register_entry, unregister_entry, install_root_hook
+
+try:
+    from util.win_ime_bridge import register_entry, unregister_entry, install_root_hook
+    IME_AVAILABLE = True
+except Exception:
+    IME_AVAILABLE = False
+    def register_entry(*_a, **_k): pass
+    def unregister_entry(*_a, **_k): pass
+    def install_root_hook(*_a, **_k): pass
+
 
 ItemKey = Union[str, Tuple[str, Path]]  # 'post'면 key(str), 'image'면 (key, path)
 
@@ -729,7 +738,21 @@ class PostList(ttk.Frame):
 
             ent.bind("<FocusIn>", _on_focus_in)
             ent.bind("<Return>", _commit)
-            ent.bind("<FocusOut>", _commit)
+
+            def _commit_guarded(_=None, _iid=iid, _var=var, _ent=ent):
+                # 1) Qt 입력창 떠 있으면 중복 커밋 방지
+                if getattr(self, "_qt_open", False):
+                    return
+                # 2) 자동완성 팝업 떠 있으면 커밋 금지 (팝업 확정이 먼저 오도록)
+                try:
+                    if self._ac_popup and self._ac_popup.is_visible():
+                        return
+                except Exception:
+                    pass
+                # 3) 정상 커밋
+                _commit()
+
+            ent.bind("<FocusOut>", _commit_guarded)
 
             self._wm_entry_overlays[iid] = ent
             self._wm_entry_vars[iid] = var
@@ -1256,9 +1279,18 @@ class PostList(ttk.Frame):
         self._edit_entry.focus()
         self._edit_entry.place(x=x, y=y, width=w, height=h)
 
-        self._edit_entry.bind("<Return>", lambda e: self._end_edit(True))
-        self._edit_entry.bind("<Escape>", lambda e: self._end_edit(False))
-        self._edit_entry.bind("<FocusOut>", lambda e: self._end_edit(True))
+        def _commit_inline_if_safe(_e=None, commit=True):
+            # 팝업이 보이는 동안엔 커밋 금지 → 팝업 확정(클릭/엔터)이 먼저
+            try:
+                if self._ac_popup and self._ac_popup.is_visible():
+                    return "break"
+            except Exception:
+                pass
+            return self._end_edit(bool(commit))
+
+        self._edit_entry.bind("<Return>", lambda e: _commit_inline_if_safe(e, True))
+        self._edit_entry.bind("<Escape>", lambda e: _commit_inline_if_safe(e, False))
+        self._edit_entry.bind("<FocusOut>", lambda e: _commit_inline_if_safe(e, True))
 
         return "break"
 

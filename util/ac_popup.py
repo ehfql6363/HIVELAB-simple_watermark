@@ -16,8 +16,8 @@ class ACPopup(tk.Toplevel):
         self.lb.bind("<Escape>", lambda _e: self.hide())
         self.lb.bind("<Double-Button-1>", self._confirm)
 
-        # ✅ 포커스를 잃으면 자동으로 숨기기
-        self.bind("<FocusOut>", lambda _e: self.hide())
+        self.lb.bind("<ButtonRelease-1>", self._confirm)  # 마우스로 항목 클릭 시 확정
+        self.bind("<FocusOut>", lambda _e: self.after(50, self.hide))  # 50ms 지연 후 숨김
 
     def show_below(self, widget, choices, height_px: int = 180, min_width: int = 240):
         if not choices:
@@ -65,3 +65,14 @@ class ACPopup(tk.Toplevel):
         val = self.lb.get(sel[0])
         self._on_pick(val)
         self.hide()
+
+    # ac_popup.py (클래스 내부)
+    def is_visible(self) -> bool:
+        try:
+            return str(self.state()) == "normal"
+        except Exception:
+            return False
+
+    def confirm_current(self):
+        # 외부에서 호출 시 현재 선택을 확정
+        self._confirm(None)

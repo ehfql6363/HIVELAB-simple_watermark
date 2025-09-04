@@ -6,7 +6,7 @@ from ctypes import wintypes
 user32 = ctypes.windll.user32
 imm32  = ctypes.windll.imm32
 
-LRESULT = wintypes.LPARAM
+LRESULT = wintypes.LRESULT
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
 # IME constants

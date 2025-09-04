@@ -89,7 +89,6 @@ class AppSettings:
             wm_stroke_width=int(d.get("wm_stroke_width", DEFAULT_WM_STROKE_W)),
             wm_anchor=tup2f(d.get("wm_anchor", (0.5, 0.5)), (0.5, 0.5)),
             wm_font_path=Path(d["wm_font_path"]) if d.get("wm_font_path") else None,
-            post_anchors=dict(),  # ✅ 항상 빈 dict로 시작(세션 한정)
             last_dir_output_dialog=Path(d["last_dir_output_dialog"]) if d.get("last_dir_output_dialog") else None,
             last_dir_font_dialog=Path(d["last_dir_font_dialog"]) if d.get("last_dir_font_dialog") else None,
         )
