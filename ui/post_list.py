@@ -38,6 +38,7 @@ class PostList(ttk.Frame):
         on_toggle_wm_mode: Optional[Callable[[list[Tuple[str, ItemKey]], str], None]] = None,
         settings: AppSettings = None,
         controller: ACManager = None,
+        on_delete: Optional[Callable[[list[str]], None]] = None,
     ):
         super().__init__(master)
         self.settings = settings or AppSettings()
@@ -51,6 +52,7 @@ class PostList(ttk.Frame):
         self.on_image_select = on_image_select
         self.on_toggle_wm = on_toggle_wm
         self.on_toggle_wm_mode = on_toggle_wm_mode
+        self.on_delete = on_delete
 
         self._posts_ref: Dict[str, dict] = {}
         self._root_nodes: Dict[str, str] = {}   # root_key -> iid
@@ -1148,20 +1150,63 @@ class PostList(ttk.Frame):
             pass
 
     def remove_selected(self):
-        sel = self.tree.selection()
+        sel = list(self.tree.selection())
         if not sel:
             messagebox.showinfo("삭제", "삭제할 항목을 선택하세요.")
             return
-        for iid in sel:
-            if iid in self._iid_to_item:
-                self.tree.delete(iid)
-                self._iid_to_item.pop(iid, None)
 
+        # 1) 삭제 대상 게시물 키만 모음(이미지/루트는 UI만 제거하고 데이터는 건드리지 않음)
+        post_keys: list[str] = []
+        for iid in sel:
+            it = self._iid_to_item.get(iid)
+            if not it:
+                continue
+            typ, key = it
+            if typ == "post":
+                post_keys.append(key)
+
+        # 2) 매핑 정리를 위해, 삭제되는 각 노드의 모든 하위 iids를 미리 수집
+        def _collect_descendants(root_iid: str) -> list[str]:
+            out = [root_iid]
+            stack = [root_iid]
+            while stack:
+                cur = stack.pop()
+                try:
+                    children = list(self.tree.get_children(cur))
+                except Exception:
+                    children = []
+                out.extend(children)
+                stack.extend(children)
+            return out
+
+        all_iids_to_remove: set[str] = set()
+        for iid in sel:
+            for x in _collect_descendants(iid):
+                all_iids_to_remove.add(x)
+
+        # 3) UI에서 실제 삭제
+        for iid in sel:
+            try:
+                self.tree.delete(iid)
+            except Exception:
+                pass
+
+        # 4) 내부 매핑도 정리
+        for iid in list(all_iids_to_remove):
+            self._iid_to_item.pop(iid, None)
+
+        # 5) 상위(MainWindow)에 실제 데이터(dict) 삭제 요청
+        if post_keys and callable(self.on_delete):
+            try:
+                self.on_delete(post_keys)
+            except Exception:
+                pass
+
+        # 6) 뷰 상태 정리
         try:
             self._refresh_wm_entries()
         except Exception:
             pass
-
         try:
             self._sync_toggle_ui_for_selection()
         except Exception:

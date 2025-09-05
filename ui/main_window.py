@@ -441,6 +441,42 @@ class MainWindow(BaseTk):
         except Exception:
             pass
 
+    def _on_posts_deleted(self, post_keys: list[str]):
+        """PostList에서 다중 선택 삭제 확정 → 실제 데이터(self.posts)에서도 제거."""
+        if not post_keys:
+            return
+
+        # 1) dict에서 제거
+        for k in post_keys:
+            try:
+                self.posts.pop(k, None)
+            except Exception:
+                pass
+
+        # 2) 컨트롤러에 현재 dict 재첨부(내부 참조 갱신)
+        try:
+            self.controller.attach_posts(self.posts)
+        except Exception:
+            pass
+
+        # 3) 트리/우측 패널 동기화
+        try:
+            self.post_list.set_posts(self.posts)
+            if self.posts:
+                self.post_list.select_first_post()
+            else:
+                self.gallery.clear()
+                self.preview.clear()
+                self.wm_editor.set_active_image_and_defaults(None, None)
+        except Exception:
+            pass
+
+        # 4) 프리뷰 재계산
+        try:
+            self.on_preview()
+        except Exception:
+            pass
+
     def _build_middle(self, parent):
         # 좌우 분할
         mid = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
@@ -467,7 +503,8 @@ class MainWindow(BaseTk):
             on_toggle_wm=self._on_list_toggle_wm,
             on_toggle_wm_mode=self._on_list_toggle_wm_mode,
             settings=self.app_settings,
-            controller=self.controller
+            controller=self.controller,
+            on_delete=self._on_posts_deleted,
         )
 
         self.post_list.pack(fill="both", expand=True)
