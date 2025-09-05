@@ -4,10 +4,15 @@ from tkinter import ttk, filedialog
 from typing import Callable, Optional
 from tkinter import colorchooser
 
+# 자동완성
+from services.autocomplete import AutocompleteIndex
+from util.ac_popup import ACPopup
+
 # 콜백 시그니처
 OnPostApply = Callable[[str, dict], None]                 # 게시물 오버라이드 저장
 OnApplyToAllImages = Callable[[str, str], None]           # (post_key, mode: 'default'|'force')
 OnPostReset = Callable[[str], None]                       # 게시물 오버라이드 제거
+
 
 class PostInspector(ttk.LabelFrame):
     """
@@ -39,8 +44,8 @@ class PostInspector(ttk.LabelFrame):
 
         row = 0
         ttk.Label(self, text="텍스트").grid(row=row, column=0, sticky="w")
-        ttk.Entry(self, textvariable=self.var_text)\
-            .grid(row=row, column=1, columnspan=2, sticky="we", padx=(6, 0)); row += 1
+        self.ent_text = ttk.Entry(self, textvariable=self.var_text)
+        self.ent_text.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6, 0)); row += 1
 
         ttk.Label(self, text="폰트").grid(row=row, column=0, sticky="w")
         ttk.Entry(self, textvariable=self.var_font)\
@@ -95,6 +100,13 @@ class PostInspector(ttk.LabelFrame):
         for c in range(3):
             self.columnconfigure(c, weight=1)
 
+        # ── 자동완성: 루트 패널과 동일 UX
+        try:
+            self._wire_autocomplete(self.ent_text)
+            self.winfo_toplevel().bind_all("<Button-1>", self._on_global_click_hide_ac, add="+")
+        except Exception:
+            pass
+
     # 외부에서: 선택 게시물이 바뀔 때 '효과 중인' 설정을 그대로 넣어준다.
     # cfg 예: {"text": "...", "font_path":"...", "scale_pct":18, "opacity":60,
     #          "fill":(r,g,b), "stroke":(r,g,b), "stroke_w":2} 또는 None(텍스트 없음)
@@ -118,7 +130,7 @@ class PostInspector(ttk.LabelFrame):
             self.var_text.set("")
 
     def _apply(self, mode: str):
-        # 1) 게시물 오버라이드 저장 (저장만!)
+        # 1) 게시물 오버라이드 저장
         if not self._post_key or not self.on_apply:
             return
         ov = {
@@ -132,9 +144,9 @@ class PostInspector(ttk.LabelFrame):
         }
         self.on_apply(self._post_key, ov)
 
-        # 2) 강제 적용에서만 하위 이미지로 전파
-        if mode == 'force' and self.on_apply_all:
-            self.on_apply_all(self._post_key, 'force')
+        # 2) 하위 이미지에 적용 (기본/강제)
+        if self.on_apply_all:
+            self.on_apply_all(self._post_key, mode)
 
     def _reset_clicked(self):
         if not self._post_key:
@@ -165,3 +177,182 @@ class PostInspector(ttk.LabelFrame):
         )
         if path:
             self.var_font.set(path)
+
+    # ───────────────────────────────────────────────────────────────
+    # 자동완성(루트 패널과 동일 로직)
+    # ───────────────────────────────────────────────────────────────
+    def _ensure_ac_objects(self):
+        if not hasattr(self, "_ac"):
+            try:
+                self._ac = AutocompleteIndex(n=3)
+            except Exception:
+                self._ac = None
+        if not hasattr(self, "_ac_popup"):
+            try:
+                self._ac_popup = ACPopup(self, on_pick=self._on_ac_pick)
+            except Exception:
+                self._ac_popup = None
+        if not hasattr(self, "_ac_target_entry"):
+            self._ac_target_entry = None
+        if not hasattr(self, "_ac_pending_job"):
+            self._ac_pending_job = None
+        if not hasattr(self, "_ac_suppressed"):
+            self._ac_suppressed = False
+
+    def _cancel_ac_job(self):
+        jid = getattr(self, "_ac_pending_job", None)
+        if jid:
+            try:
+                self.after_cancel(jid)
+            except Exception:
+                pass
+            self._ac_pending_job = None
+
+    def _force_hide_ac(self):
+        self._ac_suppressed = True
+        self._cancel_ac_job()
+        try:
+            if getattr(self, "_ac_popup", None):
+                self._ac_popup.hide()
+        except Exception:
+            pass
+
+    def _widget_is_descendant_of(self, w: tk.Widget | None, anc: tk.Widget | None) -> bool:
+        if not w or not anc:
+            return False
+        try:
+            cur = w
+            while cur is not None:
+                if cur is anc:
+                    return True
+                cur = cur.master
+        except Exception:
+            pass
+        return False
+
+    def _on_global_click_hide_ac(self, e):
+        self._ensure_ac_objects()
+        popup = getattr(self, "_ac_popup", None)
+        target = getattr(self, "_ac_target_entry", None)
+        try:
+            if not popup or not popup.winfo_exists() or not popup.winfo_viewable():
+                return
+        except Exception:
+            return
+        w = e.widget
+        if self._widget_is_descendant_of(w, popup):
+            return
+        if self._widget_is_descendant_of(w, target):
+            return
+        self._force_hide_ac()
+
+    def _update_ac_from_text(self, widget: tk.Entry, text: str, *, reason: str | None = None):
+        self._ensure_ac_objects()
+        if not getattr(self, "_ac", None) or not getattr(self, "_ac_popup", None):
+            return
+
+        self._cancel_ac_job()
+        if self._ac_suppressed:
+            try:
+                self._ac_popup.hide()
+            except Exception:
+                pass
+            return
+
+        try:
+            from settings import AppSettings
+            pool = AppSettings.load().autocomplete_texts or []
+            self._ac.rebuild(pool)
+        except Exception:
+            pass
+
+        try:
+            results = self._ac.query(text or "", top_k=10)
+        except Exception:
+            results = []
+
+        choices = [t for (t, _s) in results]
+        if not choices:
+            try:
+                self._ac_popup.hide()
+            except Exception:
+                pass
+            return
+
+        def _do_show():
+            self._ac_pending_job = None
+            if self._ac_suppressed:
+                try:
+                    self._ac_popup.hide()
+                except Exception:
+                    pass
+                return
+            try:
+                self._ac_popup.show_below(widget, choices)
+            except Exception:
+                pass
+
+        self._ac_pending_job = self.after_idle(_do_show)
+
+    def _wire_autocomplete(self, entry_widget: tk.Entry):
+        self._ensure_ac_objects()
+        if not getattr(self, "_ac_popup", None):
+            return
+
+        def _on_focus_in(_e=None, w=entry_widget):
+            self._ac_suppressed = False
+            self._ac_target_entry = w
+            self._update_ac_from_text(w, w.get(), reason="focusin")
+
+        def _on_focus_out(_e=None, _w=entry_widget):
+            self._cancel_ac_job()
+            self._ac_pending_job = self.after(1, self._force_hide_ac)
+
+        def _on_key_release(e, w=entry_widget):
+            ks = getattr(e, "keysym", "")
+            if ks in ("Escape", "Return", "Up", "Down"):
+                return
+            self._ac_suppressed = False
+            self._update_ac_from_text(w, w.get(), reason="typing")
+
+        def _on_escape(_e=None):
+            self._force_hide_ac()
+            return "break"
+
+        def _on_return(_e=None):
+            try:
+                if self._ac_popup and self._ac_popup.is_visible():
+                    self._ac_popup._confirm(None)
+                    return "break"
+            except Exception:
+                pass
+            return None
+
+        def _on_mouse_press(_e=None, w=entry_widget):
+            self._ac_target_entry = w
+            self._ac_suppressed = False
+            self._cancel_ac_job()
+            self._update_ac_from_text(w, w.get(), reason="mouse")
+
+        entry_widget.bind("<Button-1>", _on_mouse_press, add="+")
+        entry_widget.bind("<FocusIn>", _on_focus_in, add="+")
+        entry_widget.bind("<FocusOut>", _on_focus_out, add="+")
+        entry_widget.bind("<KeyRelease>", _on_key_release, add="+")
+        entry_widget.bind("<Escape>", _on_escape, add="+")
+        entry_widget.bind("<Return>", _on_return, add="+")
+        entry_widget.bind("<Down>", lambda _e: (self._ac_popup.move_selection(+1), "break"), add="+")
+        entry_widget.bind("<Up>",   lambda _e: (self._ac_popup.move_selection(-1), "break"), add="+")
+
+    def _on_ac_pick(self, text: str):
+        try:
+            w = getattr(self, "_ac_target_entry", None)
+            if w and w.winfo_exists():
+                w.delete(0, "end")
+                w.insert(0, text)
+                try:
+                    w.event_generate("<KeyRelease>")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._force_hide_ac()

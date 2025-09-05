@@ -5,6 +5,10 @@ from tkinter import ttk, colorchooser, filedialog
 from pathlib import Path
 from typing import Optional, Tuple, Callable
 
+# 자동완성
+from services.autocomplete import AutocompleteIndex
+from util.ac_popup import ACPopup
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -69,12 +73,11 @@ class ImageWMEditor(ttk.Frame):
         self.var_stroke_w = tk.IntVar(value=2)
         self.var_font = tk.StringVar(value="")
 
-        # 열 구성: 0~5열 (0=좌측 라벨, 1~4=입력부, 5=오른쪽 버튼)
-        # ▶ 1~4는 균등 확장, 5도 살짝 숨 쉴 공간을 주어 오른쪽 버튼이 덜 끼이게
-        self.box.grid_columnconfigure(0, weight=0)  # "텍스트" 라벨 열
+        # 열 구성: 0~5열
+        self.box.grid_columnconfigure(0, weight=0)
         for c in (1, 2, 3, 4):
             self.box.grid_columnconfigure(c, weight=1, uniform="wmcols")
-        self.box.grid_columnconfigure(5, weight=1)  # trailing 버튼이 있는 열도 약간 확장
+        self.box.grid_columnconfigure(5, weight=1)
 
         # ── 0행: 텍스트
         ttk.Label(self.box, text="텍스트").grid(
@@ -87,8 +90,14 @@ class ImageWMEditor(ttk.Frame):
             padx=(0, self.PADX_L), pady=(self.PADY, 4)
         )
 
+        # 자동완성 연결 + 전역 클릭으로 팝업 닫기
+        try:
+            self._wire_autocomplete(self.ent_text)
+            self.winfo_toplevel().bind_all("<Button-1>", self._on_global_click_hide_ac, add="+")
+        except Exception:
+            pass
+
         # ── 1~2행: 반응형 그룹(글자색/불투명/스케일/외곽선색/외곽선 굵기)
-        # 각 그룹은 프레임 내부 padding=0, 내부 pack도 최소 여백만
         self._build_groups()
 
         # ── 3행: 폰트 + 버튼(찾기/적용/해제)
@@ -120,10 +129,8 @@ class ImageWMEditor(ttk.Frame):
         self.after(0, self._relayout)
 
         # 리사이즈 감지 → 반응형 재배치
-        # ▶ 박스/부모의 크기 변화에도 반응하도록 바인딩 추가
         self.bind("<Configure>", self._on_configure)
         self.box.bind("<Configure>", self._on_configure)
-
         try:
             self.master.bind("<Configure>", self._on_configure)
         except Exception:
@@ -173,7 +180,6 @@ class ImageWMEditor(ttk.Frame):
         self.spin_stroke_w.pack(side="left")
 
     def _pack_color_group(self, frame: ttk.Frame, lbl: ttk.Label, ent: ttk.Entry, sw: tk.Canvas, btn: ttk.Button):
-        # 그룹 내부 패딩은 최소화(정렬 깨짐 방지)
         lbl.pack(side="left", padx=(0, 6))
         ent.pack(side="left", padx=(0, 2))
         sw.pack(side="left", padx=8)
@@ -183,12 +189,9 @@ class ImageWMEditor(ttk.Frame):
     # 반응형 재배치
     # ──────────────────────────────────────────────────────────────────
     def _on_configure(self, _):
-        # 너무 자주 재배치하지 않도록 간단한 가드
         self.after_idle(self._relayout)
 
     def _relayout(self):
-        # 현재 가용 폭 기준으로 single-row / two-rows 결정
-        # ▶ 박스 폭을 우선 사용, 실패 시 자기 폭 폴백
         w_box = self.box.winfo_width()
         w_self = self.winfo_width()
         w = max(1, w_box if w_box > 1 else w_self)
@@ -198,18 +201,12 @@ class ImageWMEditor(ttk.Frame):
         self._is_wide = is_wide_now
         self._layout_inited = True
 
-        # 먼저 기존 위치 해제
         for grp in (self.grp_fill, self.grp_opacity, self.grp_scale, self.grp_stroke, self.grp_stroke_w):
             grp.grid_forget()
 
-        # 행 간격
         pady_mid = (2, 2)
 
         if self._is_wide:
-            # 1줄: [글자색 | 불투명 | 스케일 | 외곽선색 | 외곽선 굵기]
-            # 1행을 모두 같은 row=1에 배치
-            # 각 칼럼 사이 간격은 동일 PADX_M로 통일
-            c = 0
             self.grp_fill.grid     (row=1, column=0, sticky="w", padx=(self.PADX_L, self.PADX_M), pady=pady_mid, columnspan=2)
             self.grp_opacity.grid  (row=1, column=2, sticky="w", padx=(0, self.PADX_M), pady=pady_mid)
             self.grp_scale.grid    (row=1, column=3, sticky="w", padx=(0, self.PADX_M), pady=pady_mid)
@@ -221,20 +218,17 @@ class ImageWMEditor(ttk.Frame):
                                                   padx=(0, self.PADX_L), pady=(2, self.PADY))
             except Exception:
                 pass
-
         else:
-            # 2줄:
-            # 1행 [글자색 | 불투명 | 스케일]
             self.grp_fill.grid     (row=1, column=0, sticky="w", padx=(self.PADX_L, self.PADX_M), pady=pady_mid, columnspan=2)
             self.grp_opacity.grid  (row=1, column=2, sticky="w", padx=(0, self.PADX_M),    pady=pady_mid)
             self.grp_scale.grid    (row=1, column=3, sticky="w", padx=(0, self.PADX_L),    pady=pady_mid, columnspan=3)
 
-            # 2행 [외곽선색 | 외곽선 굵기]
             self.grp_stroke.grid   (row=2, column=0, sticky="w", padx=(self.PADX_L, self.PADX_M), pady=pady_mid, columnspan=3)
             self.grp_stroke_w.grid (row=2, column=3, sticky="w", padx=(0, self.PADX_L),     pady=pady_mid, columnspan=3)
 
             try:
-                self.btns_trailing.grid_configure(row=4, column=0, columnspan=6, sticky="e", padx = (self.PADX_L, self.PADX_L), pady = (2, self.PADY))
+                self.btns_trailing.grid_configure(row=4, column=0, columnspan=6, sticky="e",
+                                                  padx=(self.PADX_L, self.PADX_L), pady=(2, self.PADY))
             except Exception:
                 pass
 
@@ -242,21 +236,18 @@ class ImageWMEditor(ttk.Frame):
         w = max(1, self.winfo_width())
         try:
             if w < 700:
-                # 초협소: 극단적으로 짧게
                 self.btn_font.configure(text="폰트")
                 self.btn_fill.configure(text="색상")
                 self.btn_stroke.configure(text="색상")
                 self.btn_apply.configure(text="적용")
                 self.btn_clear.configure(text="해제")
             elif w < 920:
-                # 중간: 기본 축약
                 self.btn_font.configure(text="찾기")
                 self.btn_fill.configure(text="선택")
                 self.btn_stroke.configure(text="선택")
                 self.btn_apply.configure(text="적용")
                 self.btn_clear.configure(text="해제")
             else:
-                # 넓을 때: 원래 라벨
                 self.btn_font.configure(text="찾기…")
                 self.btn_fill.configure(text="선택")
                 self.btn_stroke.configure(text="선택")
@@ -297,7 +288,6 @@ class ImageWMEditor(ttk.Frame):
     def set_active_image_and_defaults(self, path: Optional[Path], cfg: Optional[dict]):
         self._active_path = path
         if not cfg:
-            # 초기화
             self.var_wm_text.set("")
             self.var_opacity.set(30)
             self.var_scale.set(20)
@@ -331,3 +321,182 @@ class ImageWMEditor(ttk.Frame):
     def _clear_clicked(self):
         if self._on_clear and self._active_path:
             self._on_clear(self._active_path)
+
+    # ──────────────────────────────────────────────────────────────────
+    # 자동완성(루트 패널과 동일 로직)
+    # ──────────────────────────────────────────────────────────────────
+    def _ensure_ac_objects(self):
+        if not hasattr(self, "_ac"):
+            try:
+                self._ac = AutocompleteIndex(n=3)
+            except Exception:
+                self._ac = None
+        if not hasattr(self, "_ac_popup"):
+            try:
+                self._ac_popup = ACPopup(self, on_pick=self._on_ac_pick)
+            except Exception:
+                self._ac_popup = None
+        if not hasattr(self, "_ac_target_entry"):
+            self._ac_target_entry = None
+        if not hasattr(self, "_ac_pending_job"):
+            self._ac_pending_job = None
+        if not hasattr(self, "_ac_suppressed"):
+            self._ac_suppressed = False
+
+    def _cancel_ac_job(self):
+        jid = getattr(self, "_ac_pending_job", None)
+        if jid:
+            try:
+                self.after_cancel(jid)
+            except Exception:
+                pass
+            self._ac_pending_job = None
+
+    def _force_hide_ac(self):
+        self._ac_suppressed = True
+        self._cancel_ac_job()
+        try:
+            if getattr(self, "_ac_popup", None):
+                self._ac_popup.hide()
+        except Exception:
+            pass
+
+    def _widget_is_descendant_of(self, w: tk.Widget | None, anc: tk.Widget | None) -> bool:
+        if not w or not anc:
+            return False
+        try:
+            cur = w
+            while cur is not None:
+                if cur is anc:
+                    return True
+                cur = cur.master
+        except Exception:
+            pass
+        return False
+
+    def _on_global_click_hide_ac(self, e):
+        self._ensure_ac_objects()
+        popup = getattr(self, "_ac_popup", None)
+        target = getattr(self, "_ac_target_entry", None)
+        try:
+            if not popup or not popup.winfo_exists() or not popup.winfo_viewable():
+                return
+        except Exception:
+            return
+        w = e.widget
+        if self._widget_is_descendant_of(w, popup):
+            return
+        if self._widget_is_descendant_of(w, target):
+            return
+        self._force_hide_ac()
+
+    def _update_ac_from_text(self, widget: tk.Entry, text: str, *, reason: str | None = None):
+        self._ensure_ac_objects()
+        if not getattr(self, "_ac", None) or not getattr(self, "_ac_popup", None):
+            return
+
+        self._cancel_ac_job()
+        if self._ac_suppressed:
+            try:
+                self._ac_popup.hide()
+            except Exception:
+                pass
+            return
+
+        try:
+            from settings import AppSettings
+            pool = AppSettings.load().autocomplete_texts or []
+            self._ac.rebuild(pool)
+        except Exception:
+            pass
+
+        try:
+            results = self._ac.query(text or "", top_k=10)
+        except Exception:
+            results = []
+
+        choices = [t for (t, _s) in results]
+        if not choices:
+            try:
+                self._ac_popup.hide()
+            except Exception:
+                pass
+            return
+
+        def _do_show():
+            self._ac_pending_job = None
+            if self._ac_suppressed:
+                try:
+                    self._ac_popup.hide()
+                except Exception:
+                    pass
+                return
+            try:
+                self._ac_popup.show_below(widget, choices)
+            except Exception:
+                pass
+
+        self._ac_pending_job = self.after_idle(_do_show)
+
+    def _wire_autocomplete(self, entry_widget: tk.Entry):
+        self._ensure_ac_objects()
+        if not getattr(self, "_ac_popup", None):
+            return
+
+        def _on_focus_in(_e=None, w=entry_widget):
+            self._ac_suppressed = False
+            self._ac_target_entry = w
+            self._update_ac_from_text(w, w.get(), reason="focusin")
+
+        def _on_focus_out(_e=None, _w=entry_widget):
+            self._cancel_ac_job()
+            self._ac_pending_job = self.after(1, self._force_hide_ac)
+
+        def _on_key_release(e, w=entry_widget):
+            ks = getattr(e, "keysym", "")
+            if ks in ("Escape", "Return", "Up", "Down"):
+                return
+            self._ac_suppressed = False
+            self._update_ac_from_text(w, w.get(), reason="typing")
+
+        def _on_escape(_e=None):
+            self._force_hide_ac()
+            return "break"
+
+        def _on_return(_e=None):
+            try:
+                if self._ac_popup and self._ac_popup.is_visible():
+                    self._ac_popup._confirm(None)
+                    return "break"
+            except Exception:
+                pass
+            return None
+
+        def _on_mouse_press(_e=None, w=entry_widget):
+            self._ac_target_entry = w
+            self._ac_suppressed = False
+            self._cancel_ac_job()
+            self._update_ac_from_text(w, w.get(), reason="mouse")
+
+        entry_widget.bind("<Button-1>", _on_mouse_press, add="+")
+        entry_widget.bind("<FocusIn>", _on_focus_in, add="+")
+        entry_widget.bind("<FocusOut>", _on_focus_out, add="+")
+        entry_widget.bind("<KeyRelease>", _on_key_release, add="+")
+        entry_widget.bind("<Escape>", _on_escape, add="+")
+        entry_widget.bind("<Return>", _on_return, add="+")
+        entry_widget.bind("<Down>", lambda _e: (self._ac_popup.move_selection(+1), "break"), add="+")
+        entry_widget.bind("<Up>",   lambda _e: (self._ac_popup.move_selection(-1), "break"), add="+")
+
+    def _on_ac_pick(self, text: str):
+        try:
+            w = getattr(self, "_ac_target_entry", None)
+            if w and w.winfo_exists():
+                w.delete(0, "end")
+                w.insert(0, text)
+                try:
+                    w.event_generate("<KeyRelease>")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._force_hide_ac()
