@@ -170,7 +170,7 @@ class ImageWMEditor(ttk.Frame):
         # 스케일
         self.grp_scale = ttk.Frame(self.box, padding=0)
         ttk.Label(self.grp_scale, text="스케일(%)").pack(side="left", padx=(0, 6))
-        self.spin_scale = ttk.Spinbox(self.grp_scale, from_=1, to=50, textvariable=self.var_scale, width=4)
+        self.spin_scale = ttk.Spinbox(self.grp_scale, from_=1, to=30, textvariable=self.var_scale, width=4)
         self.spin_scale.pack(side="left")
 
         # 외곽선 굵기

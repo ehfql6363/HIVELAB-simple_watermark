@@ -36,7 +36,7 @@ class PostInspector(ttk.LabelFrame):
         # UI 상태 (폼 버퍼)
         self.var_text = tk.StringVar(master=self, value="")
         self.var_font = tk.StringVar(master=self, value=default_font_path or "")
-        self.var_scale = tk.IntVar(master=self, value=20)            # %
+        self.var_scale = tk.IntVar(master=self, value=5)            # %
         self.var_opacity = tk.IntVar(master=self, value=30)          # %
         self.var_fill = tk.StringVar(master=self, value="#000000")   # HEX
         self.var_stroke = tk.StringVar(master=self, value="#FFFFFF") # HEX
@@ -54,14 +54,14 @@ class PostInspector(ttk.LabelFrame):
             .grid(row=row, column=2, sticky="we"); row += 1
 
         ttk.Label(self, text="스케일(%)").grid(row=row, column=0, sticky="w")
-        s_scale = ttk.Scale(self, from_=8, to=60, orient="horizontal",
-                            command=lambda v: self.var_scale.set(int(float(v))))
+        s_scale = ttk.Scale(self, from_=1, to=30, orient="horizontal",
+                            variable=self.var_scale)  # ★ 변수에 바인딩
         s_scale.set(self.var_scale.get())
         s_scale.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6, 0)); row += 1
 
         ttk.Label(self, text="불투명(%)").grid(row=row, column=0, sticky="w")
         s_opacity = ttk.Scale(self, from_=10, to=100, orient="horizontal",
-                              command=lambda v: self.var_opacity.set(int(float(v))))
+                              variable=self.var_opacity)  # ★ 변수에 바인딩
         s_opacity.set(self.var_opacity.get())
         s_opacity.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6, 0)); row += 1
 
@@ -85,7 +85,7 @@ class PostInspector(ttk.LabelFrame):
 
         ttk.Label(self, text="외곽선 굵기").grid(row=row, column=0, sticky="w")
         s_stw = ttk.Scale(self, from_=0, to=8, orient="horizontal",
-                          command=lambda v: self.var_stroke_w.set(int(float(v))))
+                          variable=self.var_stroke_w)  # ★ 변수에 바인딩
         s_stw.set(self.var_stroke_w.get())
         s_stw.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6, 0)); row += 1
 
