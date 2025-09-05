@@ -78,10 +78,129 @@ class MainWindow(BaseTk):
         if self.app_settings.wm_font_path and not self.wm_panel.var_font.get().strip():
             self.wm_panel.var_font.set(str(self.app_settings.wm_font_path))
 
+        try:
+            self.wm_panel.set_apply_handlers(
+                on_apply=lambda mode: self._apply_roots_from_wmpanel(mode),
+                on_reset=self._reset_roots_from_wmpanel,
+            )
+        except Exception:
+            pass
+
         # 최초 옵션 반영 → 루트 변경 감지로 게시물 등록
         self._on_options_changed()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # -----------API------------
+    def _apply_roots_from_wmpanel(self, mode: str):
+        # 1) 대상 루트 수집
+        try:
+            targets = self.root_panel.get_selected_root_keys()
+        except Exception:
+            targets = []
+        if not targets:
+            from tkinter import messagebox
+            messagebox.showinfo("적용", "적용할 루트를 선택하세요.")
+            return
+
+        # 2) 현재 워터마크 옵션 가져오기(프로젝트 함수명에 맞춰 수정 가능)
+        try:
+            wm_opts = self.wm_panel.get_current_wm_options()
+        except Exception:
+            wm_opts = {}  # 최소 안전값
+
+        # 3) 컨트롤러에 위임: rev++ 및 mode 규칙('default'|'force') 처리
+        try:
+            if hasattr(self, "controller") and hasattr(self.controller, "apply_root_wm_options"):
+                # controller.apply_root_wm_options(root_keys, options, mode)
+                self.controller.apply_root_wm_options(targets, wm_opts, mode)
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("적용 오류", str(e))
+            return
+
+        # 4) UI 갱신
+        self._refresh_wm_views()
+
+    def _reset_roots_from_wmpanel(self):
+        # 1) 대상 루트 수집
+        try:
+            targets = self.root_panel.get_selected_root_keys()
+        except Exception:
+            targets = []
+        if not targets:
+            from tkinter import messagebox
+            messagebox.showinfo("초기화", "초기화할 루트를 선택하세요.")
+            return
+
+        # 2) 기본 옵션 구성(프로젝트 함수명에 맞춰 수정 가능)
+        try:
+            default_opts = self.wm_panel.get_default_wm_options()
+        except Exception:
+            from settings import DEFAULT_WM_TEXT
+            default_opts = {"text": DEFAULT_WM_TEXT}
+
+        # 3) 컨트롤러에 위임: 기본값으로 변경(=변경으로 취급, rev++)
+        try:
+            if hasattr(self, "controller") and hasattr(self.controller, "reset_root_wm_options"):
+                # controller.reset_root_wm_options(root_keys, options)
+                self.controller.reset_root_wm_options(targets, default_opts)
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("초기화 오류", str(e))
+            return
+
+        # 4) UI 갱신
+        self._refresh_wm_views()
+
+    def _refresh_wm_views(self):
+        """
+        posts 딕셔너리는 그대로 두고, 트리/미리보기 표시만 새로 그린다.
+        재스캔을 하면 인메모리 오버라이드가 소실되니 절대 호출하지 않는다.
+        """
+        try:
+            posts = getattr(self.controller, "_posts_ref", {}) or {}
+        except Exception:
+            posts = {}
+
+        # 1) 기존 선택 기억
+        try:
+            prev_sel = self.post_list.get_selected_post()
+        except Exception:
+            prev_sel = None
+
+        # 2) 트리 다시 채우기 (같은 dict이므로 오버라이드는 유지됨)
+        try:
+            self.post_list.set_posts(posts)
+        except Exception:
+            pass
+
+        # 3) 선택 복원(없으면 첫 항목 선택)
+        try:
+            if prev_sel:
+                self.post_list.select_key(prev_sel)
+            else:
+                self.post_list.select_first_post()
+        except Exception:
+            pass
+
+        # 4) 미리보기 + 유령 워터마크 cfg 동기화
+        try:
+            sel_key = self.post_list.get_selected_post()
+            if not sel_key:
+                return
+            settings = self._collect_settings()
+            before, after = self.controller.preview_by_key(sel_key, posts, settings)
+            self.preview.show(before, after)
+
+            # 유령 워터마크 cfg는 현재 선택 게시물의 "첫 이미지" 기준으로 계산
+            meta = posts.get(sel_key) or {}
+            files = meta.get("files") or []
+            active_src = files[0] if files else None
+            cfg = self.controller.resolve_wm_config(meta, settings, active_src) if active_src else None
+            self.preview.set_wm_preview_config(cfg)
+        except Exception:
+            pass
 
     def _collect_ui_options(self):
         """
@@ -176,7 +295,7 @@ class MainWindow(BaseTk):
         폴더(B) 인라인 편집 시:
         - '가장 최근 수정 우선' 규칙에 따라 게시물 텍스트만 최신 rev로 저장
         - 하위 이미지의 기존 값은 건드리지 않음(삭제 금지)
-        - 리스트/프리뷰 즉시 갱신
+        - 리스트/프리뷰/왼쪽 패널 즉시 갱신
         """
         meta = self.posts.get(post_key)
         if not meta:
@@ -184,6 +303,13 @@ class MainWindow(BaseTk):
 
         # 1) 게시물 텍스트를 최신 rev로 기록 (빈 문자열도 '의도된 최신값'으로 인정)
         self.controller.set_post_overrides(post_key, {"text": value})
+
+        # 1.5) 게시물 패널(PostInspector)에도 즉시 반영
+        try:
+            eff = self.controller.resolve_wm_config(meta, self.app_settings, None)
+            self.post_inspector.bind_post(post_key, eff)
+        except Exception:
+            pass
 
         # 2) 트리 표시 즉시 갱신
         try:
@@ -348,13 +474,22 @@ class MainWindow(BaseTk):
         left_split.add(postlist_holder, weight=3)
 
         # (아래) PostInspector
-        def _on_post_overrides_change(post_key: str, overrides: dict):
-            if overrides:
-                self.controller.set_post_overrides(post_key, overrides)
-            else:
-                # ⬇ settings 전달
-                self.controller.reset_post_scope(post_key, self.app_settings)
+        def _on_post_apply_clicked(post_key: str, overrides: dict):
+            # 게시물 오버라이드 저장(최신 rev); 이미지 오버라이는 건드리지 않음
+            self.controller.set_post_overrides(post_key, overrides)
+            try:
+                self.post_list.refresh_wm_for_post(post_key)
+            except Exception:
+                pass
+            # 프리뷰/에디터 재동기화
+            try:
+                self.on_preview()
+            except Exception:
+                pass
 
+        def _on_post_apply_all(post_key: str, mode: str):
+            # 게시물 오버라이드 → 하위 이미지로 전파
+            self.controller.apply_post_overrides_to_images(post_key, mode)
             try:
                 self.post_list.refresh_wm_for_post(post_key)
             except Exception:
@@ -364,19 +499,18 @@ class MainWindow(BaseTk):
             except Exception:
                 pass
 
-        def _on_apply_all_images(post_key: str):
-            meta = self.posts.get(post_key)
-            if not meta:
-                return
-            # 현재 '최신 병합 텍스트'를 각 이미지 text로 복사(이미지마다 새 rev 발행)
-            for p in (meta.get("files") or []):
-                cfg = self.controller.resolve_wm_config(meta, self.app_settings, p)
-                txt = "" if not cfg else (cfg.get("text", "") or "")
-                self.controller.set_image_override(post_key, p, "text", txt)
-
-            self.controller.apply_post_text_to_all_images(post_key)
+        def _on_post_reset_clicked(post_key: str):
+            # 상위값 따르기 = 게시물 오버라이드 제거(상속 복원)
+            self.controller.clear_post_overrides(post_key)
             try:
                 self.post_list.refresh_wm_for_post(post_key)
+            except Exception:
+                pass
+            # 인스펙터를 상속 값으로 다시 채움
+            meta = self.posts.get(post_key) or {}
+            eff = self.controller.resolve_wm_config(meta, self.app_settings, None)
+            try:
+                self.post_inspector.bind_post(post_key, eff)
             except Exception:
                 pass
             try:
@@ -387,10 +521,12 @@ class MainWindow(BaseTk):
         inspector_holder = ttk.Frame(left_split)
         self.post_inspector = PostInspector(
             inspector_holder,
-            on_change=_on_post_overrides_change,
-            on_apply_all=_on_apply_all_images,
+            on_apply=_on_post_apply_clicked,
+            on_apply_all=_on_post_apply_all,  # ⬅ 추가
+            on_reset=_on_post_reset_clicked,
             default_font_path=str(self.app_settings.wm_font_path or "")
         )
+
         self.post_inspector.pack(fill="x", expand=False)
         left_split.add(inspector_holder, weight=2)
 
@@ -714,7 +850,8 @@ class MainWindow(BaseTk):
         img_map = meta.get("img_anchors") or {}
 
         try:
-            self.post_inspector.bind_post(key, (self.posts.get(key) or {}).get("post_overrides"))
+            eff = self.controller.resolve_wm_config(meta, self.app_settings, None)
+            self.post_inspector.bind_post(key, eff)
         except Exception:
             pass
 
@@ -851,7 +988,8 @@ class MainWindow(BaseTk):
             bg_color=hex_to_rgb(bg_hex or "#FFFFFF"),
             wm_opacity=int(wm_opacity),
             wm_scale_pct=int(wm_scale),
-            default_wm_text=DEFAULT_WM_TEXT,
+            # ⬇️ 저장된 앱 기본 텍스트 사용
+            default_wm_text=self.app_settings.default_wm_text,
             wm_fill_color=hex_to_rgb(wm_fill_hex or "#000000"),
             wm_stroke_color=hex_to_rgb(wm_stroke_hex or "#FFFFFF"),
             wm_stroke_width=int(wm_stroke_w),

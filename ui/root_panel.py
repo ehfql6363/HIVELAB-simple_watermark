@@ -71,6 +71,23 @@ class RootPanel(ttk.LabelFrame):
             pass
 
     # ───────── Public API ─────────
+    def get_selected_root_keys(self) -> List[Path]:
+        """체크된 루트들의 내부 키(Path or IMAGES_VROOT)를 Path로 반환.
+           가상 루트 '이미지'는 IMAGES_VROOT 문자열을 Path(...)로 감싸 동일하게 처리."""
+        keys: List[Path] = []
+        for row in self._rows:
+            try:
+                if not row["sel_var"].get():
+                    continue
+                disp = row["path_var"].get()
+                if disp == IMAGES_DISPLAY:
+                    keys.append(Path(IMAGES_VROOT))
+                else:
+                    keys.append(Path(disp))
+            except Exception:
+                pass
+        return keys
+
     def _on_global_click_hide_ac(self, e):
         # 자동완성 객체/팝업 확보
         self._ensure_ac_objects()

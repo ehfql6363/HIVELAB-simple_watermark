@@ -31,6 +31,10 @@ class AppController:
         self._preview_cache_limit = 128
         self._preview_lock = threading.Lock()
 
+        self._root_opts: Dict[
+            Path, Dict[str, object]] = {}
+        self._root_rev: Dict[Path, Dict[str, int]] = {}
+
         # ✅ 프리뷰 최대 긴 변(원본 그대로일 때도 화면용으로 다운스케일)
         self._max_preview_side = 1400
 
@@ -38,6 +42,77 @@ class AppController:
         self._posts_ref: Dict[str, dict] | None = None
 
     # ---------- 내부 유틸 ----------
+    def apply_root_wm_options(self, root_keys: List[Path], options: dict, mode: str = "default"):
+        """
+        mode:
+          - 'default': 루트를 따르는 하위만 새 루트 옵션을 따르게 됨(오버라이드는 그대로)
+          - 'force'  : 하위(post/image)의 오버라이드를 모두 지우고 루트 옵션을 따르게 강제
+        항상 루트 옵션의 각 필드는 rev를 증가시킴(내부 저장은 -1 취급이므로 오버라이드를 덮지 않음).
+        """
+        norm = self._normalize_opts(options)
+        for rk in root_keys:
+            # 1) 루트 옵션/리비전 갱신
+            d = self._root_opts.setdefault(Path(rk), {})
+            rv = self._root_rev.setdefault(Path(rk), {})
+            for k, v in norm.items():
+                d[k] = v
+                rv[k] = self._next_rev()
+
+            # 2) 강제 적용이면 하위 오버라이드 제거
+            if mode == "force":
+                for pk, meta in self._iter_posts_under_root(Path(rk)):
+                    # 게시물 오버라이드 제거
+                    meta.pop("post_overrides", None)
+                    meta.pop("post_overrides_rev", None)
+                    # 이미지 오버라이드 제거
+                    meta.pop("img_overrides", None)
+                    meta.pop("img_overrides_rev", None)
+                    # 레거시 인라인 제거
+                    meta.pop("wm_text_edit", None)
+                    meta.pop("img_wm_text_edits", None)
+                    meta.pop("img_text_from_post_rev", None)
+
+    def reset_root_wm_options(self, root_keys: List[Path], default_options: dict):
+        """
+        '초기화' = 루트 기본값을 지정된 기본옵션으로 되돌리고(값을 세팅), 각 필드 rev 증가.
+        오버라이드는 유지(= 기본 적용과 동일).
+        """
+        norm = self._normalize_opts(default_options)
+        for rk in root_keys:
+            d = self._root_opts.setdefault(Path(rk), {})
+            rv = self._root_rev.setdefault(Path(rk), {})
+            # 지정된 기본값으로 갱신
+            for k, v in norm.items():
+                d[k] = v
+                rv[k] = self._next_rev()
+
+    def _normalize_opts(self, opts: dict | None) -> Dict[str, object]:
+        """UI에서 넘어온 옵션을 컨트롤러 내부 표준형으로 정규화."""
+        opts = dict(opts or {})
+        out: Dict[str, object] = {}
+        if "text" in opts: out["text"] = (opts.get("text") or "").strip()
+        if "font_path" in opts: out["font_path"] = str(opts.get("font_path") or "")
+        if "scale_pct" in opts: out["scale_pct"] = int(opts.get("scale_pct") or 0)
+        if "opacity" in opts: out["opacity"] = int(opts.get("opacity") or 0)
+        if "stroke_w" in opts: out["stroke_w"] = int(opts.get("stroke_w") or 0)
+        if "fill" in opts: out["fill"] = self._to_rgb(opts.get("fill"))
+        if "stroke" in opts: out["stroke"] = self._to_rgb(opts.get("stroke"))
+        return out
+
+    def _iter_posts_under_root(self, root_key: Path):
+        """현재 posts_ref에서 특정 루트에 속한 (post_key, meta) 이터레이터."""
+        posts = self._posts_ref or {}
+        rk = str(root_key)
+        for pk, meta in posts.items():
+            try:
+                r: RootConfig = meta.get("root")
+                if not r:
+                    continue
+                if str(r.path) == rk:
+                    yield pk, meta
+            except Exception:
+                continue
+
     def attach_posts(self, posts: Dict[str, dict]) -> None:
         """MainWindow가 소유한 posts 딕셔너리를 컨트롤러에 연결해 둔다."""
         self._posts_ref = posts
@@ -330,18 +405,33 @@ class AppController:
             return (int(round(w * (m / h))), int(m))
 
     # ---------- 설정 병합 ----------
+    def apply_post_overrides_to_images(self, post_key: str, mode: str = "default"):
+        """
+        게시물 오버라이드(po)를 하위 이미지에 반영.
+        - mode == 'default' : 아무 것도 하지 않음(이미지들은 게시물 값을 '상속'받아 즉시 반영됨)
+        - mode == 'force'   : 모든 이미지의 오버라이드를 제거해 '게시물 값을 따르도록' 강제
+        """
+        posts = self._posts_ref or {}
+        meta = posts.get(post_key)
+        if not meta:
+            return
+
+        files = list(meta.get("files") or [])
+        if not files:
+            return
+
+        if mode != "force":
+            # 기본 모드: 이미지에 따로 쓰지 않는다. (상속으로 반영되므로 NO-OP)
+            return
+
+        # 강제 모드: 하위 이미지 오버라이드를 제거해 상속을 강제
+        for p in files:
+            self.clear_image_overrides(post_key, p)
+        # (구 레거시 마커도 정리)
+        meta.pop("img_text_from_post_rev", None)
+
     def resolve_wm_config(self, meta: dict, settings: AppSettings, src: Optional[Path]) -> Optional[dict]:
-        """
-        최신-우선(latest-wins) 병합.
-        각 필드(text, font_path, scale_pct, opacity, fill, stroke, stroke_w)에 대해
-        이미지/게시물/루트/전역의 'rev'를 비교하여 가장 최근 rev의 value를 채택.
-        - 전역 settings: rev=-2
-        - 루트 text(없으면 전역 text): rev=-1 (text만)
-        - 레거시 인라인(meta["img_wm_text_edits"], meta["wm_text_edit"]): rev=0 (text만)
-        - 게시물/이미지 오버라이드: 저장된 rev 사용
-        텍스트가 ""(빈문자)면 워터마크 없음 → None 반환.
-        """
-        # 0) 전역 기본값 (rev=-2)
+        # 0) 전역
         g = {
             "text": (settings.default_wm_text or "").strip(),
             "font_path": str(settings.wm_font_path) if settings.wm_font_path else "",
@@ -351,86 +441,58 @@ class AppController:
             "stroke": tuple(settings.wm_stroke_color),
             "stroke_w": int(settings.wm_stroke_width),
         }
-        g_rev = {k: -2 for k in g.keys()}
 
-        # 1) 루트 텍스트 (rev=-1, text만)
+        # 1) 루트
         root = meta.get("root")
+        ro: Dict[str, object] = {}
+        rc_text = g["text"]
         if root is not None:
-            root_text = getattr(root, "wm_text", None)
-            if root_text is None:
-                root_text = g["text"]
-            r_text = (root_text or "").strip()
-        else:
-            r_text = g["text"]
-        r_rev = -1
+            try:
+                ro = self._root_opts.get(Path(root.path), {}) or {}
+            except Exception:
+                ro = {}
+            try:
+                rtxt = getattr(root, "wm_text", None)
+                if rtxt is not None:
+                    rc_text = (str(rtxt).strip())
+            except Exception:
+                pass
 
-        # 2) 게시물 오버라이드
+        # 2) 게시물/이미지
         po = meta.get("post_overrides") or {}
-        pr = meta.get("post_overrides_rev") or {}
-
-        # 3) 이미지 오버라이드
         if src is not None:
             io_all = meta.get("img_overrides") or {}
-            ir_all = meta.get("img_overrides_rev") or {}
             io = io_all.get(src) or {}
-            ir = ir_all.get(src) or {}
         else:
-            io, ir = {}, {}
+            io = {}
 
-        # 4) 레거시 인라인(항상 rev=0) — text만
-        legacy_img_text = None
-        if src is not None:
-            imgs_map = meta.get("img_wm_text_edits") or {}
-            if src in imgs_map:
-                legacy_img_text = (imgs_map[src] or "").strip()
-        legacy_post_text = (meta.get("wm_text_edit") or "").strip() if ("wm_text_edit" in meta) else None
-
-        # 필드별 후보를 rev와 함께 모아 선택
-        def choose(field, is_text=False):
-            candidates = []
-            # 전역
-            candidates.append((g[field], g_rev[field], 5))  # tie-break idx
-
-            # 루트(text만)
+        def pick(field: str, is_text: bool = False):
+            # 고정 우선순위: 이미지 > 게시물 > 루트(옵션/텍스트) > 전역
+            if field in io:  # 이미지 오버라이드
+                return io[field]
+            if field in po:  # 게시물 오버라이드
+                return po[field]
             if is_text:
-                candidates.append((r_text, r_rev, 4))
+                # 루트 텍스트(RootConfig.wm_text)가 설정되어 있으면 우선
+                return rc_text if rc_text is not None else (ro.get(field) if field in ro else g[field])
+            # 텍스트 외 필드: 루트 옵션 → 전역
+            if field in ro:
+                return ro[field]
+            return g[field]
 
-            # 게시물 오버라이드
-            if field in po:
-                candidates.append((po[field], int(pr.get(field, 0)), 2))
-
-            # 이미지 오버라이드
-            if field in io:
-                candidates.append((io[field], int(ir.get(field, 0)), 1))
-
-            # 레거시 인라인(text만)
-            if is_text:
-                if legacy_img_text is not None:
-                    candidates.append((legacy_img_text, 0, 0))  # 이미지 인라인
-                if legacy_post_text is not None:
-                    candidates.append((legacy_post_text, 0, 3))
-
-            # rev 최대 → 동률이면 tie-break가 낮은 것
-            best_val, best_rev, best_tb = None, -9999, 99
-            for val, rev, tb in candidates:
-                if rev > best_rev or (rev == best_rev and tb < best_tb):
-                    best_val, best_rev, best_tb = val, rev, tb
-            return best_val
-
-        text = choose("text", is_text=True)
-        if (text or "").strip() == "":
+        text = (pick("text", is_text=True) or "").strip()
+        if text == "":
             return None
 
-        cfg = {
-            "text": (text or "").strip(),
-            "font_path": str(choose("font_path") or ""),
-            "scale_pct": int(choose("scale_pct")),
-            "opacity": int(choose("opacity")),
-            "fill": tuple(choose("fill")),
-            "stroke": tuple(choose("stroke")),
-            "stroke_w": int(choose("stroke_w")),
+        return {
+            "text": text,
+            "font_path": str(pick("font_path") or ""),
+            "scale_pct": int(pick("scale_pct")),
+            "opacity": int(pick("opacity")),
+            "fill": tuple(pick("fill")),
+            "stroke": tuple(pick("stroke")),
+            "stroke_w": int(pick("stroke_w")),
         }
-        return cfg
 
     # ---------- 스캔 ----------
     def scan_posts_multi(self, roots: List[RootConfig], dropped_images: Optional[List[Path]] = None) -> Dict[str, dict]:

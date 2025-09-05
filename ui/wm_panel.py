@@ -170,7 +170,56 @@ class WmPanel(ttk.LabelFrame):
         # 높이 제한용(옵션)
         self._max_height: Optional[int] = None
 
+        # --- 루트 적용/강제적용/초기화 버튼 바 ---
+        self.applybar = ttk.Frame(self)
+        self.applybar.pack(fill="x", pady=(8, 0))
+
+        # 오른쪽 정렬 스페이서
+        ttk.Frame(self.applybar).pack(side="left", fill="x", expand=True)
+
+        self.btn_apply = ttk.Button(self.applybar, text="적용", command=lambda: self._emit_apply("default"))
+        self.btn_apply.pack(side="right", padx=(6, 0))
+
+        self.btn_apply_force = ttk.Button(self.applybar, text="강제 적용", command=lambda: self._emit_apply("force"))
+        self.btn_apply_force.pack(side="right", padx=(6, 0))
+
+        self.btn_reset = ttk.Button(self.applybar, text="초기화", command=self._emit_reset)
+        self.btn_reset.pack(side="right", padx=(6, 0))
+
     # ───────── 외부 API ─────────
+    def set_apply_handlers(self,
+                           on_apply: Optional[Callable[[str], None]] = None,
+                           on_reset: Optional[Callable[[], None]] = None):
+        """외부(MainWindow)에서 연결할 콜백 세터.
+        on_apply(mode): mode='default' | 'force'
+        on_reset(): 기본값으로 되돌리기(=변경으로 처리, rev++)"""
+        self._on_apply_cb = on_apply
+        self._on_reset_cb = on_reset
+
+    def _emit_apply(self, mode: str):
+        cb = getattr(self, "_on_apply_cb", None)
+        if callable(cb):
+            try:
+                cb(mode)
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("적용 오류", str(e))
+        else:
+            from tkinter import messagebox
+            messagebox.showinfo("적용", "외부 콜백이 연결되어 있지 않습니다.")
+
+    def _emit_reset(self):
+        cb = getattr(self, "_on_reset_cb", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("초기화 오류", str(e))
+        else:
+            from tkinter import messagebox
+            messagebox.showinfo("초기화", "외부 콜백이 연결되어 있지 않습니다.")
+
     def add_dropped_images(self, paths):
         """글로벌 DnD로 받은 이미지 목록을 내부 큐에 적재하고 UI 갱신."""
         added = False
